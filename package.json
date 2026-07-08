@@ -1,0 +1,32 @@
+{
+  "name": "dental-ai-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI-native operating system for dentistry (portfolio MVP)",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "seed": "pnpm --filter @dental/seed seed",
+    "db:migrate": "pnpm --filter @dental/db migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild",
+      "protobufjs",
+      "sharp",
+      "@temporalio/core-bridge"
+    ]
+  }
+}

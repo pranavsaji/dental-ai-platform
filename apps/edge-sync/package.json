@@ -1,0 +1,25 @@
+{
+  "name": "@dental/edge-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "dev:a": "EDGE_SITE=a tsx src/main.ts",
+    "dev:b": "EDGE_SITE=b tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dental/shared": "workspace:*",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  }
+}

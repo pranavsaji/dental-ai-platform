@@ -1,0 +1,96 @@
+# Local infrastructure.
+# Apps (api, web, edge-sync, agents) run on the host via `pnpm dev` for fast iteration;
+# this file provides the "cloud" data plane and the two simulated on-prem OpenDental servers.
+
+services:
+  # --- Simulated on-prem OpenDental servers (one MySQL per practice location) ---
+  opendental-a:
+    image: mysql:8.0
+    container_name: dental-opendental-a
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: opendental
+      MYSQL_USER: od
+      MYSQL_PASSWORD: odpass
+    ports:
+      - "3307:3306"
+    volumes:
+      - opendental_a_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uod", "-podpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opendental-b:
+    image: mysql:8.0
+    container_name: dental-opendental-b
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: opendental
+      MYSQL_USER: od
+      MYSQL_PASSWORD: odpass
+    ports:
+      - "3308:3306"
+    volumes:
+      - opendental_b_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uod", "-podpass"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # --- Platform database (Aurora PostgreSQL stand-in) with pgvector ---
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: dental-postgres
+    environment:
+      POSTGRES_USER: dental
+      POSTGRES_PASSWORD: dental
+      POSTGRES_DB: dental
+    ports:
+      - "5442:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dental -d dental"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # --- Temporal (Temporal Cloud stand-in) ---
+  temporal:
+    image: temporalio/auto-setup:1.25.2
+    container_name: dental-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: dental
+      POSTGRES_PWD: dental
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "workflow", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: dental-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8233:8080"
+
+volumes:
+  opendental_a_data:
+  opendental_b_data:
+  postgres_data:

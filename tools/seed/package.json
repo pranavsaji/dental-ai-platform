@@ -1,0 +1,19 @@
+{
+  "name": "@dental/seed",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "tsx src/seed.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^9.6.0",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

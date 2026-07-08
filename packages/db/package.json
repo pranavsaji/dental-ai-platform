@@ -1,0 +1,34 @@
+{
+  "name": "@dental/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc --noEmit",
+    "push": "drizzle-kit push",
+    "migrate": "drizzle-kit push",
+    "bootstrap": "tsx src/bootstrap.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "dotenv": "^16.4.5",
+    "drizzle-kit": "^0.31.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

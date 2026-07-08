@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+.tmp/
+.DS_Store
+credentials.json
+token.json
+edge-sync-state/
+
+# --- documentation kept local (not published) ---
+*.md
+
+# --- extra secret-material safety nets ---
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
