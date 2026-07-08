@@ -14,8 +14,10 @@ credentials.json
 token.json
 edge-sync-state/
 
-# --- documentation kept local (not published) ---
+# --- documentation kept local (not published), except the two published docs ---
 *.md
+!README.md
+!feature.md
 
 # --- extra secret-material safety nets ---
 .env.*
