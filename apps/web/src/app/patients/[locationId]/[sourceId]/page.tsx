@@ -17,7 +17,18 @@ interface Timeline {
   claims: Array<{ sourceId: number; dateService: string | null; status: string; claimFee: number; insPayAmt: number }>;
   recall: { dateDue: string | null; datePrevious: string | null } | null;
   insurance: Array<{ ordinal: number; subscriberId: string; carrierName: string | null }>;
+  // B3: pre-auth lifecycle per procedure — powers the chart badge.
+  preauths: Array<{ procedureSourceId: number; status: string; missingItem: string }>;
 }
+
+const PREAUTH_CHIP: Record<string, string> = {
+  approved: "bg-mint text-pine",
+  denied: "bg-coral-soft text-coral",
+  more_info: "bg-amber-soft text-amber",
+  submitted: "bg-amber-soft text-amber",
+  pending_approval: "bg-line/70 text-ink-soft",
+  draft: "bg-line/70 text-ink-soft"
+};
 
 const COMM_TYPE: Record<number, string> = { 1: "Appointment", 2: "Billing", 3: "Clinical note", 4: "Text message" };
 
@@ -134,17 +145,30 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
         <Card title="Procedures">
           {data.procedures.length === 0 ? <Empty text="None" /> : (
             <table className="w-full">
-              <thead className="border-b border-line/70"><tr><Th>Date</Th><Th>Code</Th><Th>Description</Th><Th>Tooth</Th><Th className="text-right">Fee</Th></tr></thead>
+              <thead className="border-b border-line/70"><tr><Th>Date</Th><Th>Code</Th><Th>Description</Th><Th>Tooth</Th><Th>Pre-auth</Th><Th className="text-right">Fee</Th></tr></thead>
               <tbody className="divide-y divide-line/50">
-                {data.procedures.slice(0, 15).map((pr) => (
-                  <tr key={pr.sourceId}>
-                    <Td className="num">{fmtDate(pr.procDate)}</Td>
-                    <Td className="num">{pr.procCode}</Td>
-                    <Td className="text-ink-soft">{pr.description}</Td>
-                    <Td className="num">{pr.toothNum || "—"}</Td>
-                    <Td className="num text-right">{fmtMoney(pr.fee)}</Td>
-                  </tr>
-                ))}
+                {data.procedures.slice(0, 15).map((pr) => {
+                  const pa = data.preauths?.find((x) => x.procedureSourceId === pr.sourceId);
+                  return (
+                    <tr key={pr.sourceId}>
+                      <Td className="num">{fmtDate(pr.procDate)}</Td>
+                      <Td className="num">{pr.procCode}</Td>
+                      <Td className="text-ink-soft">{pr.description}</Td>
+                      <Td className="num">{pr.toothNum || "—"}</Td>
+                      <Td>
+                        {pa ? (
+                          <span
+                            className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${PREAUTH_CHIP[pa.status] ?? "bg-line/70 text-ink-soft"}`}
+                            title={pa.status === "more_info" && pa.missingItem ? `Payer needs: ${pa.missingItem}` : `Pre-authorization ${pa.status.replace(/_/g, " ")}`}
+                          >
+                            {pa.status === "approved" ? "cleared" : pa.status.replace(/_/g, " ")}
+                          </span>
+                        ) : ""}
+                      </Td>
+                      <Td className="num text-right">{fmtMoney(pr.fee)}</Td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

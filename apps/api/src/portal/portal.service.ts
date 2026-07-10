@@ -2,7 +2,8 @@ import { ForbiddenException, Inject, Injectable, NotFoundException } from "@nest
 import { and, asc, count, desc, eq, gte, ilike, inArray, lt, lte, notInArray, or, sql, sum } from "drizzle-orm";
 import {
   appointments, auditLog, claims, commLogs, huddleDigests, insPlans, locations,
-  operatories, patPlans, patients, procedureCodes, procedures, providers, recalls
+  operatories, patPlans, patients, preauths, procedureCodes, procedures,
+  providers, recalls
 } from "@dental/db";
 import { DB, type Db } from "../db";
 import type { SessionUser } from "../auth/auth";
@@ -213,7 +214,18 @@ export class PortalService {
         eq(insPlans.sourceId, patPlans.planSourceId)))
       .where(and(eq(patPlans.locationId, loc.id), eq(patPlans.patientSourceId, sourceId)));
 
-    return { location: { id: loc.id, key: loc.key, name: loc.name }, patient, appointments: appts, procedures: procs, notes, claims: patClaims, recall: recall ?? null, insurance: patplanRows };
+    // B3: pre-auth status per procedure — the chart badge that tells the
+    // provider a planned crown/SRP is cleared (or blocked) with the payer.
+    const preauthRows = await this.db
+      .select({
+        procedureSourceId: preauths.procedureSourceId,
+        status: preauths.status,
+        missingItem: preauths.missingItem
+      })
+      .from(preauths)
+      .where(and(eq(preauths.locationId, loc.id), eq(preauths.patientSourceId, sourceId)));
+
+    return { location: { id: loc.id, key: loc.key, name: loc.name }, patient, appointments: appts, procedures: procs, notes, claims: patClaims, recall: recall ?? null, insurance: patplanRows, preauths: preauthRows };
   }
 
   async auditEntries(user: SessionUser, limit = 100) {
