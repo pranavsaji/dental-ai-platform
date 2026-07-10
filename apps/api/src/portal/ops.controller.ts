@@ -4,7 +4,9 @@ import {
 import { randomUUID } from "node:crypto";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
+import { AnalyticsService } from "./analytics.service";
 import { AuditService } from "../audit.service";
+import { AgentsClient } from "../temporal/agents.client";
 import { TemporalService } from "../temporal/temporal.service";
 
 const AGENTS_URL = () => process.env.AGENTS_URL ?? "http://localhost:8000";
@@ -15,7 +17,9 @@ const AGENTS_URL = () => process.env.AGENTS_URL ?? "http://localhost:8000";
 export class OpsController {
   constructor(
     private portal: PortalService,
+    private analytics: AnalyticsService,
     private audit: AuditService,
+    private agents: AgentsClient,
     private temporal: TemporalService
   ) {}
 
@@ -117,6 +121,64 @@ export class OpsController {
       action: "workflow.started.treatmentOutreach", resource: "workflow", resourceId: workflowId
     });
     return { workflowId };
+  }
+
+  // --- Phase D ---------------------------------------------------------------
+
+  // D1: manual metrics rollup (the cron fires at 02:30 computing yesterday).
+  // days>1 backfills, overwriting the bootstrap's synthetic rows with
+  // canonical numbers — capped at 90 by the service.
+  @Post("metrics-rollup")
+  async metricsRollup(
+    @CurrentUser() user: SessionUser,
+    @Query("locationId") locationId?: string,
+    @Query("days") days?: string
+  ) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const n = Math.max(1, Math.min(90, Number(days) || 1));
+    const workflowId = `metrics-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
+    try {
+      await this.temporal.startWorkflow("metricsRollup", workflowId, {
+        orgId: user.orgId, locationId: loc.id, siteKey: loc.key, days: n
+      });
+    } catch (err) {
+      throw new BadRequestException(`could not start workflow: ${(err as Error).message}`);
+    }
+    await this.audit.log({
+      orgId: user.orgId, locationId: loc.id, actorType: "user", actor: user.email,
+      action: "workflow.started.metricsRollup", resource: "workflow", resourceId: workflowId,
+      purpose: `${n} day(s)`
+    });
+    return { workflowId, days: n };
+  }
+
+  // D3: owner insights — "why did site B underperform this week?" answered
+  // only from daily_location_metrics deltas. Deterministic comparison windows
+  // come from AnalyticsService (org-wide gate applies); the agent narrates,
+  // the z-score template answers when no LLM is available.
+  @Post("insights")
+  async insights(
+    @CurrentUser() user: SessionUser,
+    @Body() body: { question?: string; windowDays?: number }
+  ) {
+    if (!body.question?.trim()) throw new BadRequestException("question required");
+    const windows = await this.analytics.insightWindows(user, body.windowDays ?? 7);
+    const result = await this.agents.draftInsights({
+      question: body.question.trim(),
+      ...windows
+    });
+    await this.audit.log({
+      orgId: user.orgId, locationId: null, actorType: "agent", actor: "agent:insights",
+      action: "analytics.insights", resource: "daily_location_metrics",
+      resourceId: windows.currentRange,
+      purpose: `question from ${user.email}: ${body.question.trim().slice(0, 120)}`
+    });
+    return {
+      ...result,
+      windowDays: windows.windowDays,
+      currentRange: windows.currentRange,
+      previousRange: windows.previousRange
+    };
   }
 
   @Post("previsit/:locationId/:patientSourceId")

@@ -24,6 +24,7 @@ const NAV = [
   { href: "/schedule", label: "Schedule", glyph: "▤" },
   { href: "/patients", label: "Patients", glyph: "◍" },
   { href: "/billing", label: "Billing", glyph: "◈" },
+  { href: "/analytics", label: "Analytics", glyph: "∿" },
   { href: "/approvals", label: "Approvals", glyph: "✳" },
   { href: "/tasks", label: "Tasks", glyph: "☰" },
   { href: "/sms", label: "SMS Console", glyph: "◗" },
@@ -165,7 +166,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </div>
         </aside>
 
-        <div className="ml-56 flex-1">
+        {/* min-w-0: let wide tables scroll inside overflow-x-auto instead of
+            stretching the flex item (and the whole page) past the viewport. */}
+        <div className="ml-56 min-w-0 flex-1">
           <header className="sticky top-0 z-40 flex items-center justify-between border-b border-line bg-paper/90 px-8 py-3 backdrop-blur">
             <div className="text-[11px] uppercase tracking-[0.2em] text-ink-faint">
               Lone Star Dental Group

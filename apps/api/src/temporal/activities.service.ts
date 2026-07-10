@@ -10,6 +10,7 @@ import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { CommandsService } from "../edge/commands.service";
 import { CLEARINGHOUSE, type ClearinghousePort } from "../clearinghouse";
+import { MetricsService } from "../portal/metrics.service";
 import { TasksService } from "../portal/tasks.service";
 import { SmsService } from "../sms/sms.service";
 import { AgentsClient, type SchedulingCandidate } from "./agents.client";
@@ -34,7 +35,8 @@ export class ActivitiesService implements ActivitiesInterface {
     private commands: CommandsService,
     private tasks: TasksService,
     private sms: SmsService,
-    private agents: AgentsClient
+    private agents: AgentsClient,
+    private metrics: MetricsService
   ) {}
 
   // --- tasks (A5) ---------------------------------------------------------------
@@ -1836,5 +1838,20 @@ export class ActivitiesService implements ActivitiesInterface {
       resourceId: dateStr, purpose: `${todays.length} appointments, ${draft.actions.length} action items`
     });
     return { date: dateStr, actionCount: draft.actions.length, usedLlm: draft.usedLlm };
+  }
+
+  // --- D1: metrics rollup -------------------------------------------------------------
+
+  async rollupDailyMetrics(input: {
+    orgId: number; locationId: number; days: number; workflowId: string;
+  }): Promise<{ days: number; from: string; to: string }> {
+    const res = await this.metrics.rollupRange(input.orgId, input.locationId, input.days);
+    await this.audit.log({
+      orgId: input.orgId, locationId: input.locationId, actorType: "system",
+      actor: "workflow:metricsRollup", action: "metrics.rollup",
+      resource: "daily_location_metrics", resourceId: `${res.from}..${res.to}`,
+      purpose: `${res.days} day(s) recomputed from canonical tables (${input.workflowId})`
+    });
+    return res;
   }
 }

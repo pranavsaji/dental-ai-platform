@@ -99,7 +99,7 @@ const APPEAL_CHIP: Record<string, string> = {
 };
 
 export default function BillingPage() {
-  const { location } = useApp();
+  const { location, setLocationId } = useApp();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
   const [denials, setDenials] = useState<DenialRow[]>([]);
@@ -110,6 +110,17 @@ export default function BillingPage() {
   const [sort, setSort] = useState("priority");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+
+  // D2 drill-through: /analytics links land here as
+  // /billing?locationId=N&bucket=90+ — adopt both on first render.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const loc = Number(params.get("locationId"));
+    if (Number.isFinite(loc) && loc > 0) setLocationId(loc);
+    const b = params.get("bucket");
+    if (b && ["0-30", "31-60", "61-90", "90+"].includes(b)) setBucket(b);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(() => {
     if (!location) return;

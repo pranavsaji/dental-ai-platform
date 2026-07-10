@@ -271,6 +271,65 @@ export class AgentsClient {
     }
   }
 
+  // --- Phase D owner insights (D3) --------------------------------------------------
+
+  // The payload is entirely deterministic (AnalyticsService.insightWindows):
+  // per location, per metric — window averages, previous std, delta %, z-score.
+  // The LLM narrates over exactly those numbers; the fallback ranks the
+  // largest |z| deltas and templates them, so /analytics answers without an
+  // LLM or with the agents service down.
+  async draftInsights(input: {
+    question: string;
+    windowDays: number;
+    currentRange: string;
+    previousRange: string;
+    locations: Array<{
+      locationId: number;
+      key: string;
+      name: string;
+      metrics: Array<{
+        metric: string;
+        currentAvg: number;
+        previousAvg: number;
+        previousStd: number;
+        deltaPct: number | null;
+        zScore: number | null;
+      }>;
+    }>;
+  }): Promise<{ answer: string; highlights: string[]; usedLlm: boolean }> {
+    const fallback = () => {
+      const deltas = input.locations.flatMap((loc) =>
+        loc.metrics
+          .filter((m) => m.zScore !== null)
+          .map((m) => ({ loc: loc.name, ...m }))
+      ).sort((a, b) => Math.abs(b.zScore!) - Math.abs(a.zScore!));
+      const top = deltas.slice(0, 3);
+      const highlights = top.map((d) =>
+        `${d.loc}: ${d.metric} averaged ${d.currentAvg}/day (${input.currentRange}) vs ` +
+        `${d.previousAvg}/day (${input.previousRange})` +
+        `${d.deltaPct !== null ? `, ${d.deltaPct > 0 ? "+" : ""}${d.deltaPct}%` : ""} (z ${d.zScore})`
+      );
+      const answer = top.length === 0
+        ? "No metric moved meaningfully between the two windows — nothing in the data explains a change in performance."
+        : `Largest week-over-week changes in the metrics data: ${highlights.join("; ")}. ` +
+          `These are observations from daily_location_metrics only — anything beyond these numbers is not in the data.`;
+      return { answer, highlights, usedLlm: false };
+    };
+    try {
+      const res = await fetch(`${this.baseUrl}/ops/insights`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(90_000)
+      });
+      if (!res.ok) throw new Error(`agents service HTTP ${res.status}`);
+      return (await res.json()) as any;
+    } catch (err) {
+      this.log.warn(`insights agent unavailable (${(err as Error).message}); using z-score template`);
+      return fallback();
+    }
+  }
+
   async reviewClaims(input: {
     locationName: string;
     claims: Array<{

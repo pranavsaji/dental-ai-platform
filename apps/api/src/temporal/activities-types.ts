@@ -248,4 +248,10 @@ export interface ActivitiesInterface {
   generateHuddleDigest(input: {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
   }): Promise<{ date: string; actionCount: number; usedLlm: boolean }>;
+
+  // --- D1: metrics rollup --------------------------------------------------------------
+  /** Computes and upserts the N daily_location_metrics rows ending yesterday. */
+  rollupDailyMetrics(input: {
+    orgId: number; locationId: number; days: number; workflowId: string;
+  }): Promise<{ days: number; from: string; to: string }>;
 }

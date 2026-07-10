@@ -11,6 +11,7 @@ from .clinical import (
 )
 from .config import MODEL, llm_available, provider_chain
 from .huddle import HuddleRequest, HuddleResponse, draft_huddle
+from .insights import InsightsRequest, InsightsResponse, draft_insights
 from .scheduling import (
     OutreachRequest, OutreachResponse, ProposeRequest, ProposeResponse, outreach, propose,
 )
@@ -42,6 +43,11 @@ def scheduling_outreach(req: OutreachRequest) -> OutreachResponse:
 @app.post("/ops/huddle", response_model=HuddleResponse)
 def ops_huddle(req: HuddleRequest) -> HuddleResponse:
     return draft_huddle(req)
+
+
+@app.post("/ops/insights", response_model=InsightsResponse)
+def ops_insights(req: InsightsRequest) -> InsightsResponse:
+    return draft_insights(req)
 
 
 @app.post("/billing/review", response_model=ReviewResponse)

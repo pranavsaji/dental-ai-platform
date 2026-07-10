@@ -753,3 +753,28 @@ export async function morningHuddle(input: MorningHuddleInput): Promise<string> 
   const digest = await acts.generateHuddleDigest({ ...input, workflowId: wfId });
   return `digest-${digest.date}-actions-${digest.actionCount}`;
 }
+
+// --- D1: nightly metrics rollup --------------------------------------------------------
+
+export interface MetricsRollupInput {
+  orgId: number;
+  locationId: number;
+  siteKey: string;
+  /** Days ending yesterday to (re)compute; 1 = nightly, up to 90 = backfill. */
+  days?: number;
+}
+
+// Explicit rollup rows, not a matview: the nightly cron computes yesterday
+// (idempotent upsert), and the same workflow re-run with days=N backfills —
+// overwriting the bootstrap's synthetic seed rows with canonical numbers.
+// Read-only with respect to the PMS; D2's /analytics reads only these rows.
+export async function metricsRollup(input: MetricsRollupInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  const res = await acts.rollupDailyMetrics({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    days: input.days ?? 1,
+    workflowId: wfId
+  });
+  return `rolled-${res.days}-days-${res.from}..${res.to}`;
+}

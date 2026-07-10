@@ -85,7 +85,9 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
           issueRescheduleCommands: this.activities.issueRescheduleCommands.bind(this.activities),
           finalizeReschedule: this.activities.finalizeReschedule.bind(this.activities),
           // C1: morning huddle
-          generateHuddleDigest: this.activities.generateHuddleDigest.bind(this.activities)
+          generateHuddleDigest: this.activities.generateHuddleDigest.bind(this.activities),
+          // D1: metrics rollup
+          rollupDailyMetrics: this.activities.rollupDailyMetrics.bind(this.activities)
         }
       });
       void this.worker.run().catch((err) => this.log.error(`worker crashed: ${err.message}`));
@@ -123,8 +125,9 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
   }
 
   // Per-location cron schedules, registered idempotently at boot:
-  //   05:00 insuranceVerification (B2)   06:00 morningHuddle (C1)
-  //   07:00 treatmentOutreach (C5)       16:00 reminderSweep for T+1 (C2)
+  //   02:30 metricsRollup (D1)           05:00 insuranceVerification (B2)
+  //   06:00 morningHuddle (C1)           07:00 treatmentOutreach (C5)
+  //   16:00 reminderSweep for T+1 (C2)
   // Manual triggers for all of them live under /portal/ops and /portal/billing.
   private async ensureCrons(): Promise<void> {
     if (!this.client) return;
@@ -133,6 +136,7 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
       for (const loc of locs) {
         const base = { orgId: loc.orgId, locationId: loc.id, siteKey: loc.key };
         const crons: Array<{ name: string; workflowId: string; schedule: string; arg: unknown }> = [
+          { name: "metricsRollup", workflowId: `metrics-${loc.key}`, schedule: "30 2 * * *", arg: { ...base, days: 1 } },
           { name: "insuranceVerification", workflowId: `elig-sweep-${loc.key}`, schedule: "0 5 * * *", arg: { ...base, daysAhead: 3 } },
           { name: "morningHuddle", workflowId: `huddle-${loc.key}`, schedule: "0 6 * * *", arg: base },
           { name: "treatmentOutreach", workflowId: `treatment-outreach-${loc.key}`, schedule: "0 7 * * *", arg: base },
