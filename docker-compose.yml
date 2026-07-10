@@ -2,6 +2,8 @@
 # Apps (api, web, edge-sync, agents) run on the host via `pnpm dev` for fast iteration;
 # this file provides the "cloud" data plane and the two simulated on-prem OpenDental servers.
 
+name: dental
+
 services:
   # --- Simulated on-prem OpenDental servers (one MySQL per practice location) ---
   opendental-a:

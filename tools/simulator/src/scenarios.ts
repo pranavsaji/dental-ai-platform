@@ -62,6 +62,27 @@ export const SCENARIOS: Record<string, Scenario> = {
     }
   },
 
+  "preauth-crown": {
+    name: "preauth-crown",
+    description: "Treatment-plan a crown for an insured patient today — primes the pre-authorization workflow (B3).",
+    async run(rng, ops) {
+      const log: string[] = [];
+      const insured = (await ops.listPatients()).filter((p) => p.planNum > 0);
+      if (insured.length === 0) {
+        log.push("no insured patients — run the seed first");
+        return log;
+      }
+      const crown = ops.codes().find((c) => c.code === "D2740")!;
+      const pat = rng.pick(insured);
+      const tooth = rng.pick(["3", "14", "19", "30"]);
+      const procNum = await ops.planProcedure({
+        patNum: pat.patNum, provNum: rng.int(1, 2), code: crown, toothNum: tooth
+      });
+      log.push(`treatment-planned ${crown.code} (${crown.descript}) tooth ${tooth} for patient ${pat.patNum} — procedure ${procNum}`);
+      return log;
+    }
+  },
+
   "no-show-week": {
     name: "no-show-week",
     description: "Several patients silently miss appointments — primes no-show risk scoring (C4).",

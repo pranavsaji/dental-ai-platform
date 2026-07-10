@@ -18,6 +18,9 @@ import { ActionsController } from "./portal/actions.controller";
 import { OpsController } from "./portal/ops.controller";
 import { TasksController } from "./portal/tasks.controller";
 import { TasksService } from "./portal/tasks.service";
+import { BillingController } from "./portal/billing.controller";
+import { BillingService } from "./portal/billing.service";
+import { clearinghouseProvider } from "./clearinghouse";
 import { AgentsClient } from "./temporal/agents.client";
 import { ActivitiesService } from "./temporal/activities.service";
 import { TemporalService } from "./temporal/temporal.service";
@@ -26,7 +29,7 @@ import { TemporalService } from "./temporal/temporal.service";
   controllers: [
     AuthController, SsoController, TwilioController,
     EdgeController, PortalController, ActionsController, OpsController,
-    TasksController
+    TasksController, BillingController
   ],
   providers: [
     dbProvider,
@@ -40,6 +43,8 @@ import { TemporalService } from "./temporal/temporal.service";
     HooksService,
     PortalService,
     TasksService,
+    BillingService,
+    clearinghouseProvider,
     AgentsClient,
     ActivitiesService,
     TemporalService

@@ -82,14 +82,18 @@ export class IngestService {
             set: { name: p.name, abbrev: p.abbrev, itemOrder: p.itemOrder, defaultProviderSourceId: p.defaultProviderId, isHidden: p.isHidden, sourceStamp: base.sourceStamp, syncedAt: base.syncedAt }
           });
         break;
-      case "procedurecode":
+      case "procedurecode": {
+        // requiresPreauth is derived here from the shared helper (B3) — the
+        // canonical column is a queryable mirror of that single source of truth.
+        const needsPreauth = shared.requiresPreauth(p.procCode);
         await this.db.insert(procedureCodes)
-          .values({ ...base, procCode: p.procCode, description: p.description, abbrDesc: p.abbrDesc })
+          .values({ ...base, procCode: p.procCode, description: p.description, abbrDesc: p.abbrDesc, requiresPreauth: needsPreauth })
           .onConflictDoUpdate({
             target: [procedureCodes.locationId, procedureCodes.sourceId],
-            set: { procCode: p.procCode, description: p.description, abbrDesc: p.abbrDesc, sourceStamp: base.sourceStamp, syncedAt: base.syncedAt }
+            set: { procCode: p.procCode, description: p.description, abbrDesc: p.abbrDesc, requiresPreauth: needsPreauth, sourceStamp: base.sourceStamp, syncedAt: base.syncedAt }
           });
         break;
+      }
       case "patient": {
         const values = {
           ...base,
@@ -143,6 +147,11 @@ export class IngestService {
         break;
       }
       case "procedurelog": {
+        // Prev-state read so a procedure arriving/turning treatment-planned
+        // can trigger the pre-auth workflow exactly once, at ingest time (B3).
+        const [prevProc] = await this.db.select({ status: procedures.status })
+          .from(procedures)
+          .where(and(eq(procedures.locationId, site.locationId), eq(procedures.sourceId, event.sourceId)));
         const values = {
           ...base,
           patientSourceId: p.patientId, appointmentSourceId: p.appointmentId,
@@ -153,6 +162,7 @@ export class IngestService {
         const { orgId, locationId, sourceId, ...set } = values;
         await this.db.insert(procedures).values(values)
           .onConflictDoUpdate({ target: [procedures.locationId, procedures.sourceId], set });
+        await this.hooks.onProcedureUpserted(site, event.sourceId, prevProc?.status ?? null, p);
         break;
       }
       case "insplan": {

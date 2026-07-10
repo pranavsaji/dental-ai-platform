@@ -102,6 +102,8 @@ export class TasksService {
       action: outcome === "done" ? "task.resolved" : "task.dismissed",
       resource: "task", resourceId: String(taskId), purpose: task.type
     });
+    // Returned so the controller can resume a workflow parked on this task (B3).
+    return task;
   }
 
   private async mustGet(orgId: number, locationId: number, taskId: number) {

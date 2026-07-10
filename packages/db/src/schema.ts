@@ -88,7 +88,10 @@ export const procedureCodes = pgTable("procedure_codes", {
   ...tenantCols,
   procCode: text("proc_code").notNull(),
   description: text("description").notNull(),
-  abbrDesc: text("abbr_desc").notNull()
+  abbrDesc: text("abbr_desc").notNull(),
+  // B3: derived at ingest from requiresPreauth() in @dental/shared — the
+  // shared helper is the source of truth, this column is its queryable mirror.
+  requiresPreauth: boolean("requires_preauth").notNull().default(false)
 }, (t) => [uniqueIndex("proccodes_loc_src_uq").on(t.locationId, t.sourceId)]);
 
 export const patients = pgTable("patients", {
@@ -383,6 +386,80 @@ export const dailyLocationMetrics = pgTable("daily_location_metrics", {
   appointmentsCount: integer("appointments_count").notNull().default(0),
   chairUtilization: doublePrecision("chair_utilization").notNull().default(0)
 }, (t) => [uniqueIndex("dlm_loc_date_uq").on(t.locationId, t.date)]);
+
+// --- Phase B: billing suite ----------------------------------------------------
+
+// Eligibility verification results (B2). One row per check — history is kept;
+// readers take the freshest row per (patient, plan). Checks are fresh for 30
+// days (expiresAt); the nightly sweep skips patients with a live check.
+export const eligibilityChecks = pgTable("eligibility_checks", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  patientSourceId: bigint("patient_source_id", { mode: "number" }).notNull(),
+  planSourceId: bigint("plan_source_id", { mode: "number" }).notNull(),
+  appointmentSourceId: bigint("appointment_source_id", { mode: "number" }),
+  status: text("status").notNull(), // verified | inactive | attention | failed | pending
+  // Structured payer response: deductible remaining, annual max used,
+  // frequency flags, payer note — whatever the clearinghouse port returned.
+  coverage: jsonb("coverage").notNull().default({}),
+  summary: text("summary").notNull().default(""), // human-readable (agent or template)
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  workflowId: text("workflow_id")
+}, (t) => [
+  index("elig_loc_pat_idx").on(t.locationId, t.patientSourceId),
+  index("elig_loc_checked_idx").on(t.locationId, t.checkedAt)
+]);
+
+// Pre-authorizations (B3). One row per treatment-planned procedure that
+// requires payer pre-auth; the preAuthorization workflow owns the lifecycle.
+export const preauths = pgTable("preauths", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  patientSourceId: bigint("patient_source_id", { mode: "number" }).notNull(),
+  procedureSourceId: bigint("procedure_source_id", { mode: "number" }).notNull(),
+  planSourceId: bigint("plan_source_id", { mode: "number" }).notNull(),
+  procCode: text("proc_code").notNull().default(""),
+  fee: doublePrecision("fee").notNull().default(0),
+  status: text("status").notNull().default("draft"), // draft | pending_approval | submitted | more_info | approved | denied
+  narrative: text("narrative").notNull().default(""),
+  missingItem: text("missing_item").notNull().default(""), // payer's named ask when more_info
+  payerReference: text("payer_reference"),
+  usedLlm: boolean("used_llm").notNull().default(false),
+  workflowId: text("workflow_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true })
+}, (t) => [
+  uniqueIndex("preauth_loc_proc_uq").on(t.locationId, t.procedureSourceId),
+  index("preauth_loc_status_idx").on(t.locationId, t.status)
+]);
+
+// Claim denials (B4): classified remittance outcomes + appeal lifecycle.
+// Category comes from the deterministic CARC map in @dental/shared; the
+// billing agent may refine the summary within — never contradict — it.
+export const claimDenials = pgTable("claim_denials", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  claimSourceId: bigint("claim_source_id", { mode: "number" }).notNull(),
+  patientSourceId: bigint("patient_source_id", { mode: "number" }).notNull(),
+  carcCodes: text("carc_codes").notNull().default(""), // comma-joined, like claims.carcCodes
+  category: text("category").notNull(), // missing_documentation | frequency | not_covered | coordination_of_benefits | medical_necessity | administrative
+  appealable: boolean("appealable").notNull().default(false),
+  agentSummary: text("agent_summary").notNull().default(""),
+  appealStatus: text("appeal_status").notNull().default("none"), // none | drafted | pending_approval | sent | won | lost
+  appealLetter: text("appeal_letter").notNull().default(""),
+  usedLlm: boolean("used_llm").notNull().default(false),
+  workflowId: text("workflow_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true })
+}, (t) => [
+  uniqueIndex("denials_loc_claim_uq").on(t.locationId, t.claimSourceId),
+  index("denials_loc_status_idx").on(t.locationId, t.appealStatus)
+]);
 
 // Clinical note embeddings for pgvector RAG (bge-small-en-v1.5 = 384 dims,
 // generated locally by the agents service — no external embedding API).

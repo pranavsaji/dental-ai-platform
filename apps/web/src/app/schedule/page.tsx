@@ -23,16 +23,46 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+interface EligBadge {
+  patientSourceId: number;
+  status: string; // verified | attention | inactive | failed
+  summary: string;
+  checkedAt: string;
+}
+
+// B2: green/amber/red insurance badge per schedule row, from the freshest
+// eligibility check. Gray dot = never checked (sweep hasn't reached them).
+function InsuranceDot({ check }: { check: EligBadge | undefined }) {
+  const tone =
+    !check ? "bg-line" :
+    check.status === "verified" ? "bg-teal" :
+    check.status === "attention" ? "bg-amber" :
+    "bg-coral";
+  const title = check
+    ? `${check.status} — ${check.summary} (checked ${new Date(check.checkedAt).toLocaleDateString()})`
+    : "insurance not verified yet";
+  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone}`} title={title} />;
+}
+
 export default function SchedulePage() {
   const { location } = useApp();
   const [date, setDate] = useState(todayStr());
   const [data, setData] = useState<ScheduleResp | null>(null);
+  const [elig, setElig] = useState<Map<number, EligBadge>>(new Map());
 
   useEffect(() => {
     if (!location) return;
     setData(null);
     api<ScheduleResp>(`/portal/schedule?locationId=${location.id}&date=${date}`)
-      .then(setData).catch(() => {});
+      .then((d) => {
+        setData(d);
+        const ids = [...new Set(d.appointments.map((a) => a.patientSourceId))];
+        if (ids.length === 0) { setElig(new Map()); return; }
+        api<EligBadge[]>(`/portal/billing/eligibility?locationId=${location.id}&patients=${ids.join(",")}`)
+          .then((rows) => setElig(new Map(rows.map((r) => [r.patientSourceId, r]))))
+          .catch(() => setElig(new Map()));
+      })
+      .catch(() => {});
   }, [location, date]);
 
   function shiftDay(delta: number) {
@@ -62,7 +92,7 @@ export default function SchedulePage() {
             <table className="w-full">
               <thead className="border-b border-line/70">
                 <tr>
-                  <Th>Time</Th><Th>Len</Th><Th>Patient</Th><Th>Procedure</Th><Th>Provider</Th><Th>Operatory</Th><Th>Conf.</Th><Th>Status</Th>
+                  <Th>Time</Th><Th>Len</Th><Th>Patient</Th><Th>Ins.</Th><Th>Procedure</Th><Th>Provider</Th><Th>Operatory</Th><Th>Conf.</Th><Th>Status</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/50">
@@ -75,6 +105,7 @@ export default function SchedulePage() {
                         {a.patientLast}, {a.patientFirst}
                       </Link>
                     </Td>
+                    <Td><InsuranceDot check={elig.get(a.patientSourceId)} /></Td>
                     <Td className="text-ink-soft">{a.procDescript}</Td>
                     <Td>{a.providerAbbr ?? "—"}</Td>
                     <Td className="text-ink-soft">{a.operatoryName ?? "—"}</Td>

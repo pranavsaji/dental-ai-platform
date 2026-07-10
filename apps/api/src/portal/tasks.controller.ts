@@ -4,13 +4,15 @@ import {
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
 import { TasksService } from "./tasks.service";
+import { TemporalService } from "../temporal/temporal.service";
 
 @Controller("portal/tasks")
 @UseGuards(JwtGuard)
 export class TasksController {
   constructor(
     private portal: PortalService,
-    private tasksService: TasksService
+    private tasksService: TasksService,
+    private temporal: TemporalService
   ) {}
 
   @Get()
@@ -79,7 +81,17 @@ export class TasksController {
       throw new BadRequestException("outcome must be done or dismissed");
     }
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
-    await this.tasksService.resolve(user.orgId, loc.id, id, user.email, outcome);
+    const task = await this.tasksService.resolve(user.orgId, loc.id, id, user.email, outcome);
+    // B3: a workflow parked on this task (e.g. pre-auth waiting on requested
+    // documentation) resumes when the work is done. Best-effort — the
+    // workflow may have completed or timed out, and dismissal doesn't resume.
+    if (outcome === "done" && task.workflowId) {
+      try {
+        await this.temporal.signalTaskResolved(task.workflowId, task.id);
+      } catch {
+        // workflow gone or Temporal down; the task state is still truthful
+      }
+    }
     return { ok: true };
   }
 }

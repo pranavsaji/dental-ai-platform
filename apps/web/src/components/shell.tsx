@@ -23,6 +23,7 @@ const NAV = [
   { href: "/", label: "Overview", glyph: "◳" },
   { href: "/schedule", label: "Schedule", glyph: "▤" },
   { href: "/patients", label: "Patients", glyph: "◍" },
+  { href: "/billing", label: "Billing", glyph: "◈" },
   { href: "/approvals", label: "Approvals", glyph: "✳" },
   { href: "/tasks", label: "Tasks", glyph: "☰" },
   { href: "/sms", label: "SMS Console", glyph: "◗" },

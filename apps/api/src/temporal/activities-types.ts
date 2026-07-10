@@ -22,6 +22,38 @@ export interface BackfillProposal {
   message: string;
 }
 
+// --- Phase B: billing suite ----------------------------------------------------
+
+export interface EligibilitySweepItem {
+  patientSourceId: number;
+  planSourceId: number;
+  appointmentSourceId: number | null;
+  patientName: string;
+  carrierName: string;
+  annualMax: number;
+  deductible: number;
+}
+
+export interface PreauthCandidate {
+  patientSourceId: number;
+  patientName: string;
+  planSourceId: number;
+  carrierName: string;
+  procCode: string;
+  description: string;
+  toothNum: string;
+  fee: number;
+}
+
+export interface DenialRecord {
+  denialId: number;
+  patientSourceId: number;
+  carcCodes: string;
+  category: string;
+  appealable: boolean;
+  summary: string;
+}
+
 export interface ActivitiesInterface {
   proposeBackfill(input: ProposeBackfillInput): Promise<BackfillProposal | null>;
   setActionStatus(actionId: number, status: string, decidedBy: string | null): Promise<void>;
@@ -40,11 +72,16 @@ export interface ActivitiesInterface {
   }): Promise<void>;
   draftClaimFollowUp(input: {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
+    // B5: when set, follow up exactly this claim (per-row button) instead of
+    // letting the agent pick from the aging queue.
+    targetClaimSourceId?: number | null;
   }): Promise<{ actionId: number; claimSourceId: number; patientSourceId: number; letter: string } | null>;
   recordClaimFollowUpSent(input: {
     orgId: number; locationId: number; patientSourceId: number; letter: string; workflowId: string;
   }): Promise<void>;
-  checkClearinghouse(claimSourceId: number, attempt: number): Promise<"paid" | "denied" | "pending">;
+  checkClearinghouse(input: {
+    locationId: number; claimSourceId: number; attempt: number;
+  }): Promise<"paid" | "denied" | "pending">;
   escalateClaim(input: {
     orgId: number; locationId: number; siteKey: string; claimSourceId: number;
     reason: string; workflowId: string;
@@ -60,4 +97,63 @@ export interface ActivitiesInterface {
     createdBy: string; workflowId?: string | null;
     resourceType?: string | null; resourceId?: string | null;
   }): Promise<number>;
+
+  // --- B2: insurance eligibility verification ---------------------------------
+  listEligibilitySweep(input: {
+    orgId: number; locationId: number; daysAhead: number;
+    appointmentSourceId?: number | null;
+  }): Promise<EligibilitySweepItem[]>;
+  verifyEligibility(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    item: EligibilitySweepItem; attempt: number;
+  }): Promise<"verified" | "attention" | "inactive" | "unavailable">;
+  recordEligibilityFailure(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    item: EligibilitySweepItem; attempts: number;
+  }): Promise<void>;
+
+  // --- B3: pre-authorization ---------------------------------------------------
+  getPreauthCandidate(input: {
+    orgId: number; locationId: number; procedureSourceId: number;
+  }): Promise<PreauthCandidate | null>;
+  draftPreauth(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    procedureSourceId: number; candidate: PreauthCandidate;
+  }): Promise<{ preauthId: number; actionId: number; narrative: string }>;
+  updatePreauthStatus(input: {
+    orgId: number; locationId: number; preauthId: number; status: string;
+    missingItem?: string; resolved?: boolean;
+  }): Promise<void>;
+  submitPreauthToPayer(input: {
+    orgId: number; locationId: number; preauthId: number; procedureSourceId: number;
+    procCode: string; fee: number; narrative: string;
+  }): Promise<string>;
+  checkPreauthWithPayer(input: {
+    locationId: number; procedureSourceId: number; attempt: number; afterMoreInfo: boolean;
+  }): Promise<{ status: "pending" | "approved" | "more_info" | "denied"; missingItem: string; payerNote: string }>;
+  finalizePreauth(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    preauthId: number; procedureSourceId: number; patientSourceId: number;
+    procCode: string; outcome: "approved" | "denied"; payerNote: string;
+  }): Promise<void>;
+
+  // --- B4: denial classification + appeal --------------------------------------
+  recordDenial(input: {
+    orgId: number; locationId: number; siteKey: string; claimSourceId: number; workflowId: string;
+  }): Promise<DenialRecord>;
+  draftAppeal(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    claimSourceId: number; denialId: number;
+  }): Promise<{ actionId: number; letter: string }>;
+  markAppealSent(input: {
+    orgId: number; locationId: number; denialId: number; claimSourceId: number;
+    patientSourceId: number; letter: string; workflowId: string;
+  }): Promise<void>;
+  checkAppeal(input: {
+    locationId: number; claimSourceId: number; attempt: number;
+  }): Promise<"pending" | "won" | "lost">;
+  resolveAppeal(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    denialId: number; claimSourceId: number; outcome: "won" | "lost" | "stalled";
+  }): Promise<void>;
 }

@@ -54,6 +54,8 @@ export interface PracticeOps {
   denyClaim(claimNum: number, carcCodes: string, note: string): Promise<void>;
   editPatientContact(patNum: number, patch: { wirelessPhone?: string; email?: string }): Promise<void>;
   recordPayment(p: { patNum: number; amount: number; payType: number; note: string; date: string }): Promise<number>;
+  /** Treatment-plan a procedure today (no appointment) — primes pre-auth (B3). */
+  planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number>;
 }
 
 function fmtDate(d: Date): string {
@@ -200,11 +202,30 @@ export class InMemoryOps implements PracticeOps {
       PatNum: p.patNum, PayDate: p.date, PayAmt: p.amount, PayType: p.payType, PayNote: p.note
     });
   }
+
+  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number> {
+    const now = this.now();
+    this.practice.insert("commlog", {
+      PatNum: p.patNum, CommDateTime: fmtDateTime(now), CommType: 3,
+      Note: `Treatment planned: ${p.code.descript}${p.toothNum ? ` tooth ${p.toothNum}` : ""}. Discussed findings and fees with patient.`,
+      Mode_: 4, SentOrReceived: 0
+    });
+    return this.practice.insert("procedurelog", {
+      PatNum: p.patNum, AptNum: 0, ProcDate: fmtDate(now), ProcFee: p.code.fee,
+      ProcStatus: 1, ProvNum: p.provNum, CodeNum: p.code.codeNum, ToothNum: p.toothNum, Surf: ""
+    });
+  }
 }
 
 // --- MySQL backend -----------------------------------------------------------
 
 export class MySqlOps implements PracticeOps {
+  // ProcCode -> CodeNum as actually seeded in this database. The seeder's
+  // procedurecode table (D_CODES) is a superset of SIM_CODES in a different
+  // order, so the in-memory index+1 convention does NOT hold in DB mode —
+  // inserts must translate through this map or they write the wrong code.
+  private codeNumByProcCode: Map<string, number> | null = null;
+
   constructor(private pool: mysql.Pool) {}
 
   now(): Date {
@@ -213,6 +234,16 @@ export class MySqlOps implements PracticeOps {
 
   codes(): SimCode[] {
     return CODES;
+  }
+
+  private async dbCodeNum(procCode: string): Promise<number> {
+    if (!this.codeNumByProcCode) {
+      const [rows] = await this.pool.query<any[]>("SELECT CodeNum, ProcCode FROM procedurecode");
+      this.codeNumByProcCode = new Map(rows.map((r) => [String(r.ProcCode), Number(r.CodeNum)]));
+    }
+    const num = this.codeNumByProcCode.get(procCode);
+    if (!num) throw new Error(`procedure code ${procCode} not found in sim database`);
+    return num;
   }
 
   async listScheduled(fromDays: number, toDays: number): Promise<AppointmentLite[]> {
@@ -263,7 +294,7 @@ export class MySqlOps implements PracticeOps {
     await this.pool.execute(
       `INSERT INTO procedurelog (PatNum, AptNum, ProcDate, ProcFee, ProcStatus, ProvNum, CodeNum, ToothNum, Surf)
        VALUES (?, ?, CURDATE(), ?, 2, ?, ?, '', '')`,
-      [v.patNum, apt.insertId, v.code.fee, v.provNum, v.code.codeNum]
+      [v.patNum, apt.insertId, v.code.fee, v.provNum, await this.dbCodeNum(v.code.code)]
     );
     await this.pool.execute(
       `INSERT INTO commlog (PatNum, CommDateTime, CommType, Note, Mode_, SentOrReceived)
@@ -335,6 +366,20 @@ export class MySqlOps implements PracticeOps {
     const [res] = await this.pool.execute<any>(
       "INSERT INTO payment (PatNum, PayDate, PayAmt, PayType, PayNote) VALUES (?, ?, ?, ?, ?)",
       [p.patNum, p.date, p.amount, p.payType, p.note]
+    );
+    return res.insertId;
+  }
+
+  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number> {
+    await this.pool.execute(
+      `INSERT INTO commlog (PatNum, CommDateTime, CommType, Note, Mode_, SentOrReceived)
+       VALUES (?, NOW(), 3, ?, 4, 0)`,
+      [p.patNum, `Treatment planned: ${p.code.descript}${p.toothNum ? ` tooth ${p.toothNum}` : ""}. Discussed findings and fees with patient.`]
+    );
+    const [res] = await this.pool.execute<any>(
+      `INSERT INTO procedurelog (PatNum, AptNum, ProcDate, ProcFee, ProcStatus, ProvNum, CodeNum, ToothNum, Surf)
+       VALUES (?, 0, CURDATE(), ?, 1, ?, ?, ?, '')`,
+      [p.patNum, p.code.fee, p.provNum, await this.dbCodeNum(p.code.code), p.toothNum]
     );
     return res.insertId;
   }

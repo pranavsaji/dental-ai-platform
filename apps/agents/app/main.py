@@ -1,6 +1,11 @@
 from fastapi import FastAPI, HTTPException
 
-from .billing import ReviewRequest, ReviewResponse, review
+from .billing import (
+    AppealDraftRequest, AppealDraftResponse, EligibilitySummaryRequest,
+    EligibilitySummaryResponse, PreauthDraftRequest, PreauthDraftResponse,
+    ReviewRequest, ReviewResponse, draft_appeal, draft_preauth, review,
+    summarize_eligibility,
+)
 from .clinical import (
     PrevisitRequest, PrevisitResponse, SearchRequest, embed_pending, previsit, search,
 )
@@ -29,6 +34,21 @@ def billing_review(req: ReviewRequest) -> ReviewResponse:
         return review(req)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/billing/eligibility-summary", response_model=EligibilitySummaryResponse)
+def billing_eligibility_summary(req: EligibilitySummaryRequest) -> EligibilitySummaryResponse:
+    return summarize_eligibility(req)
+
+
+@app.post("/billing/preauth-draft", response_model=PreauthDraftResponse)
+def billing_preauth_draft(req: PreauthDraftRequest) -> PreauthDraftResponse:
+    return draft_preauth(req)
+
+
+@app.post("/billing/appeal-draft", response_model=AppealDraftResponse)
+def billing_appeal_draft(req: AppealDraftRequest) -> AppealDraftResponse:
+    return draft_appeal(req)
 
 
 @app.post("/clinical/embed")

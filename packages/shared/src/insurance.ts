@@ -67,3 +67,41 @@ export const CARC_CODES: Record<string, { description: string; category: DenialC
   "119": { description: "Benefit maximum for this period has been reached", category: "frequency", appealable: false },
   "197": { description: "Precertification/authorization absent", category: "missing_documentation", appealable: true }
 };
+
+// Deterministic CARC→category classifier (B4). The most severe/actionable code
+// wins: any appealable code makes the denial appealable, and the category comes
+// from the first appealable code (else the first known code). This static map
+// is the guardrail — an LLM may refine the summary within the category, never
+// contradict it.
+export function classifyDenial(carcCodes: string[]): {
+  category: DenialCategory;
+  appealable: boolean;
+  descriptions: string[];
+} {
+  const known = carcCodes.map((c) => ({ code: c.trim(), info: CARC_CODES[c.trim()] })).filter((c) => c.info);
+  if (known.length === 0) {
+    return { category: "administrative", appealable: false, descriptions: [] };
+  }
+  const lead = known.find((c) => c.info!.appealable) ?? known[0];
+  return {
+    category: lead.info!.category,
+    appealable: known.some((c) => c.info!.appealable),
+    descriptions: known.map((c) => `CARC ${c.code}: ${c.info!.description}`)
+  };
+}
+
+// Pre-authorization (B3): CDT code families that require payer pre-auth in the
+// sim. The plan placed a `requiresPreauth` column on the sim schema; instead
+// this shared helper is the single source of truth and the canonical
+// procedure_codes.requiresPreauth column is derived from it at ingest — no
+// PMS schema churn, and the mock clearinghouse answers from the same facts.
+const PREAUTH_CODE_PREFIXES = [
+  "D27", // crowns
+  "D28", // onlays / partial crowns
+  "D4341", "D4342", // scaling & root planing per quadrant
+  "D6" // implants / prosthodontics
+];
+
+export function requiresPreauth(procCode: string): boolean {
+  return PREAUTH_CODE_PREFIXES.some((p) => procCode.startsWith(p));
+}
