@@ -96,9 +96,12 @@ export class PortalService {
     };
   }
 
-  // C1: the digest panel on Overview. Defaults to today; history by date.
+  // C1: the digest panel on Overview. Defaults to today (local calendar day,
+  // matching how generateHuddleDigest stamps rows); history by date.
   async huddleDigest(locationId: number, date?: string) {
-    const target = date ?? new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const target = date ?? `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const [row] = await this.db.select().from(huddleDigests)
       .where(and(eq(huddleDigests.locationId, locationId), eq(huddleDigests.date, target)));
     return row ?? null;

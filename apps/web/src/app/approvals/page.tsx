@@ -63,10 +63,34 @@ export default function ApprovalsPage() {
                   <span>· workflow <span className="num">{a.workflowId.slice(0, 24)}…</span></span>
                 </div>
                 <p className="max-w-3xl text-[14.5px] leading-relaxed">{a.summary}</p>
-                {a.payload?.message && (
+                {a.payload?.message && !Array.isArray(a.payload?.recipients) && (
                   <blockquote className="mt-3 max-w-2xl rounded-md bg-mint/40 px-4 py-3 text-[13.5px] italic leading-relaxed text-pine">
                     “{a.payload.message}”
                   </blockquote>
+                )}
+                {/* Batch cards (reminders, treatment outreach, recall): the
+                    reviewer sees every message before anything sends. */}
+                {Array.isArray(a.payload?.recipients) && a.payload.recipients.length > 0 && (
+                  <div className="mt-3 max-w-2xl space-y-1.5">
+                    {a.payload.recipients.slice(0, 5).map((r: any, i: number) => (
+                      <div key={i} className="rounded-md bg-mint/30 px-3 py-2 text-[12.5px] leading-relaxed text-pine">
+                        <span className="font-semibold">{r.patientName ?? `Patient ${r.patientSourceId}`}:</span>{" "}
+                        <span className="italic">“{r.message}”</span>
+                      </div>
+                    ))}
+                    {a.payload.recipients.length > 5 && (
+                      <div className="text-[11px] text-ink-faint">
+                        + {a.payload.recipients.length - 5} more recipient{a.payload.recipients.length - 5 === 1 ? "" : "s"} in this batch
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Backfill cascade (C3): one approval covers the ordered list. */}
+                {Array.isArray(a.payload?.cascade) && a.payload.cascade.length > 1 && (
+                  <div className="mt-2 text-[12px] text-ink-soft">
+                    Cascade order: {a.payload.cascade.map((c: any) => c.patientName).join(" → ")}
+                    <span className="text-ink-faint"> (next candidate is texted only if the previous declines or times out)</span>
+                  </div>
                 )}
               </div>
               <div className="flex shrink-0 gap-2">

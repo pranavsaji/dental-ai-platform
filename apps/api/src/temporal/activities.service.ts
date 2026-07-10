@@ -1654,11 +1654,15 @@ export class ActivitiesService implements ActivitiesInterface {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
   }): Promise<{ date: string; actionCount: number; usedLlm: boolean }> {
     const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
+    // Local calendar dates throughout — the digest label must match the local
+    // day the schedule facts were gathered for (toISOString would stamp a
+    // late-evening run with tomorrow's UTC date).
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dateStr = localDate(now);
     const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
     const dayEnd = new Date(now); dayEnd.setHours(23, 59, 59, 999);
-    const yStart = new Date(dayStart.getTime() - 86_400_000);
-    const yesterdayStr = yStart.toISOString().slice(0, 10);
+    const yesterdayStr = localDate(new Date(dayStart.getTime() - 86_400_000));
 
     // Today's schedule + risk flags (C4 was refreshed by the workflow).
     const todays = await this.db
