@@ -123,6 +123,13 @@ export class OpenDentalApiAdapter implements PmsAdapter {
         });
         return { sourceId: command.appointmentSourceId };
       }
+      case "ConfirmAppointment": {
+        await this.call(`/appointments/${command.appointmentSourceId}`, {
+          method: "PUT",
+          body: JSON.stringify({ Confirmed: 2 })
+        });
+        return { sourceId: command.appointmentSourceId };
+      }
       case "AddCommlog": {
         const res = await this.call<{ CommlogNum: number }>("/commlogs", {
           method: "POST",

@@ -9,6 +9,7 @@ import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
 import { AuditService } from "../audit.service";
 import { TemporalService } from "../temporal/temporal.service";
+import { InboundRouterService } from "../sms/inbound-router.service";
 
 @Controller("portal")
 @UseGuards(JwtGuard)
@@ -17,7 +18,8 @@ export class ActionsController {
     @Inject(DB) private db: Db,
     private portal: PortalService,
     private audit: AuditService,
-    private temporal: TemporalService
+    private temporal: TemporalService,
+    private inboundRouter: InboundRouterService
   ) {}
 
   // --- approval queue --------------------------------------------------------
@@ -123,13 +125,15 @@ export class ActionsController {
       workflowId: lastOutbound?.workflowId ?? null
     });
 
-    if (lastOutbound?.workflowId) {
-      try {
-        await this.temporal.signalSmsReply(lastOutbound.workflowId, body.body.trim());
-      } catch {
-        // workflow may have completed/expired; the message is still recorded
-      }
-    }
-    return { ok: true, routedTo: lastOutbound?.workflowId ?? null };
+    // Keyword fast-path (CHANGE → reschedule) + reply threading (C3).
+    const routed = await this.inboundRouter.route({
+      orgId: user.orgId,
+      locationId: loc.id,
+      siteKey: loc.key,
+      patientSourceId: body.patientSourceId,
+      body: body.body,
+      lastWorkflowId: lastOutbound?.workflowId ?? null
+    });
+    return { ok: true, routedTo: routed.routedTo, startedReschedule: routed.startedReschedule };
   }
 }

@@ -50,6 +50,13 @@ export class BillingController {
     return this.billing.listPreauths(loc.id);
   }
 
+  // Unscheduled treatment backlog (C5): the revenue-recovery worklist.
+  @Get("unscheduled")
+  async unscheduled(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    return this.billing.listUnscheduledTreatment(loc.id);
+  }
+
   // Freshest eligibility verdict per patient — powers the /schedule badge
   // column and the /billing exceptions strip.
   @Get("eligibility")

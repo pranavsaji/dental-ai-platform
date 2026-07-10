@@ -12,6 +12,7 @@ interface ScheduleResp {
   appointments: Array<{
     sourceId: number; status: string; startsAt: string; minutes: number;
     procDescript: string; note: string; confirmed: boolean;
+    noShowRisk: number; noShowFactors: Array<{ key: string; weight: number; detail: string }>;
     operatorySourceId: number; patientSourceId: number;
     patientFirst: string | null; patientLast: string | null;
     providerAbbr: string | null; operatoryName: string | null;
@@ -42,6 +43,22 @@ function InsuranceDot({ check }: { check: EligBadge | undefined }) {
     ? `${check.status} — ${check.summary} (checked ${new Date(check.checkedAt).toLocaleDateString()})`
     : "insurance not verified yet";
   return <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone}`} title={title} />;
+}
+
+// C4: no-show risk badge, stamped by the nightly sweep. The tooltip lists
+// the factor trail ("2 prior no-shows in 8 visits, booked 41 days ahead").
+function RiskBadge({ risk, factors }: {
+  risk: number;
+  factors: Array<{ detail: string }>;
+}) {
+  if (!risk || risk < 0.3) return null;
+  const tone = risk >= 0.5 ? "bg-coral-soft text-coral" : "bg-amber-soft text-amber";
+  const title = `No-show risk ${Math.round(risk * 100)}%: ${factors.map((f) => f.detail).join("; ")}`;
+  return (
+    <span className={`num inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone}`} title={title}>
+      {Math.round(risk * 100)}%
+    </span>
+  );
 }
 
 export default function SchedulePage() {
@@ -92,7 +109,7 @@ export default function SchedulePage() {
             <table className="w-full">
               <thead className="border-b border-line/70">
                 <tr>
-                  <Th>Time</Th><Th>Len</Th><Th>Patient</Th><Th>Ins.</Th><Th>Procedure</Th><Th>Provider</Th><Th>Operatory</Th><Th>Conf.</Th><Th>Status</Th>
+                  <Th>Time</Th><Th>Len</Th><Th>Patient</Th><Th>Ins.</Th><Th>Risk</Th><Th>Procedure</Th><Th>Provider</Th><Th>Operatory</Th><Th>Conf.</Th><Th>Status</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/50">
@@ -106,6 +123,7 @@ export default function SchedulePage() {
                       </Link>
                     </Td>
                     <Td><InsuranceDot check={elig.get(a.patientSourceId)} /></Td>
+                    <Td><RiskBadge risk={a.noShowRisk} factors={a.noShowFactors ?? []} /></Td>
                     <Td className="text-ink-soft">{a.procDescript}</Td>
                     <Td>{a.providerAbbr ?? "—"}</Td>
                     <Td className="text-ink-soft">{a.operatoryName ?? "—"}</Td>

@@ -43,6 +43,17 @@ export async function applyCommand(
         resultId = payload.appointmentSourceId;
         break;
       }
+      case "ConfirmAppointment": {
+        // OD models confirmation as the Confirmed status column (>1 = a
+        // confirmation state is set), independent of AptStatus.
+        const [res] = await conn.execute<any>(
+          "UPDATE appointment SET Confirmed = 2 WHERE AptNum = ?",
+          [payload.appointmentSourceId]
+        );
+        if (res.affectedRows === 0) throw new Error(`AptNum ${payload.appointmentSourceId} not found`);
+        resultId = payload.appointmentSourceId;
+        break;
+      }
       case "AddCommlog": {
         const [res] = await conn.execute<any>(
           `INSERT INTO commlog (PatNum, CommDateTime, CommType, Note, Mode_, SentOrReceived)

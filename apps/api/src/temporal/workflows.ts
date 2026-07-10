@@ -3,7 +3,8 @@
 // no DB, no network. All side effects happen in activities.
 
 import {
-  condition, defineSignal, proxyActivities, setHandler, sleep, workflowInfo
+  ParentClosePolicy, condition, defineSignal, proxyActivities, setHandler,
+  sleep, startChild, workflowInfo
 } from "@temporalio/workflow";
 import type { ActivitiesInterface } from "./activities-types";
 
@@ -14,7 +15,11 @@ const acts = proxyActivities<ActivitiesInterface>({
 
 export type Approval = { decision: "approved" | "rejected"; decidedBy: string };
 export const approvalSignal = defineSignal<[Approval]>("approval");
-export const smsReplySignal = defineSignal<[{ body: string }]>("smsReply");
+// C3: replies carry the sender so batch workflows (reminders, outreach,
+// cascade) can tell WHO answered. patientSourceId is optional for
+// compatibility with histories signalled before Phase C.
+export type SmsReply = { body: string; patientSourceId?: number };
+export const smsReplySignal = defineSignal<[SmsReply]>("smsReply");
 // B3: a parked workflow resumes when the human resolves its blocking task
 // (the tasks controller signals the task's workflowId on resolve).
 export const taskResolvedSignal = defineSignal<[{ taskId: number }]>("taskResolved");
@@ -33,6 +38,16 @@ function readApproval(ref: { value: Approval | null }): Approval | null {
   return ref.value;
 }
 
+function smsReplyGate(): { value: SmsReply | null } {
+  const ref: { value: SmsReply | null } = { value: null };
+  setHandler(smsReplySignal, (r) => { ref.value = r; });
+  return ref;
+}
+
+function readReply(ref: { value: SmsReply | null }): SmsReply | null {
+  return ref.value;
+}
+
 export interface BackfillInput {
   orgId: number;
   locationId: number;
@@ -47,21 +62,20 @@ export interface BackfillInput {
 }
 
 // The flagship long-running dental operation: a chair just opened up.
-//   detect -> agent proposes candidate + outreach -> human approves (signal)
-//   -> SMS outreach -> patient replies (signal, or timer expires)
-//   -> booking command -> write-back confirmed against OpenDental.
+//   detect -> agent proposes a RANKED candidate list -> human approves once
+//   -> cascade: SMS each candidate in turn (4h window, cap 3) until one says
+//   yes -> booking command -> write-back confirmed against OpenDental.
+// C3 upgrade: the slot only dies after the whole approved list is exhausted.
 export async function cancellationBackfill(input: BackfillInput): Promise<string> {
   const wfId = workflowInfo().workflowId;
-
   const approval = approvalGate();
-  const smsReply: { value: { body: string } | null } = { value: null };
-  setHandler(smsReplySignal, (r) => { smsReply.value = r; });
+  const smsReply = smsReplyGate();
 
   // 1. Ask the scheduling agent for a plan; parks a card in the approval queue.
   const proposal = await acts.proposeBackfill({ ...input, workflowId: wfId });
   if (!proposal) return "no-candidates";
 
-  // 2. Human in the loop: wait up to 24h for a decision.
+  // 2. Human in the loop: one decision covers the ranked batch (24h window).
   const decided = await condition(() => approval.value !== null, "24 hours");
   if (!decided || approval.value!.decision === "rejected") {
     await acts.setActionStatus(proposal.actionId, decided ? "rejected" : "expired", approval.value?.decidedBy ?? null);
@@ -69,65 +83,71 @@ export async function cancellationBackfill(input: BackfillInput): Promise<string
   }
   await acts.setActionStatus(proposal.actionId, "approved", approval.value!.decidedBy);
 
-  // 3. Outreach via (simulated) SMS, then race patient reply vs timeout.
-  await acts.sendOutreachSms({
-    orgId: input.orgId,
-    locationId: input.locationId,
-    patientSourceId: proposal.patientSourceId,
-    body: proposal.message,
-    workflowId: wfId
-  });
-  const replied = await condition(() => smsReply.value !== null, "4 hours");
-  if (!replied) {
-    await acts.setActionStatus(proposal.actionId, "expired", null);
-    return "no-reply";
-  }
-  const positive = /^\s*(y|yes|sure|ok|confirm)/i.test(smsReply.value!.body);
-  if (!positive) {
-    await acts.setActionStatus(proposal.actionId, "rejected", "patient-declined");
+  // 3. Cascade through candidates. Replies are matched on patientSourceId so
+  // a stale "YES" from an earlier candidate can't claim the current offer.
+  for (const candidate of proposal.candidates) {
+    smsReply.value = null;
     await acts.sendOutreachSms({
       orgId: input.orgId,
       locationId: input.locationId,
-      patientSourceId: proposal.patientSourceId,
-      body: "No problem — we'll keep you on the list and reach out next time. Reply STOP to opt out.",
+      patientSourceId: candidate.patientSourceId,
+      body: candidate.message,
       workflowId: wfId
     });
-    return "patient-declined";
+    const replied = await condition(() => {
+      const r = readReply(smsReply);
+      return r !== null && (r.patientSourceId ?? candidate.patientSourceId) === candidate.patientSourceId;
+    }, "4 hours");
+    if (!replied) continue; // timed out — cascade to the next candidate
+
+    const positive = /^\s*(y|yes|sure|ok|confirm)/i.test(readReply(smsReply)!.body);
+    if (!positive) {
+      await acts.sendOutreachSms({
+        orgId: input.orgId,
+        locationId: input.locationId,
+        patientSourceId: candidate.patientSourceId,
+        body: "No problem — we'll keep you on the list and reach out next time. Reply STOP to opt out.",
+        workflowId: wfId
+      });
+      continue;
+    }
+
+    // 4. Book it: durable command to the edge, confirmed by ack from OpenDental.
+    const commandId = await acts.issueBookingCommand({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      workflowId: wfId,
+      patientSourceId: candidate.patientSourceId,
+      providerSourceId: input.providerSourceId,
+      operatorySourceId: input.operatorySourceId,
+      startsAt: input.startsAt,
+      minutes: input.minutes,
+      procDescript: input.procDescript
+    });
+    let status = "pending";
+    for (let i = 0; i < 60; i++) {
+      status = await acts.getCommandStatus(commandId);
+      if (status === "applied" || status === "failed") break;
+      await sleep("3 seconds");
+    }
+    if (status !== "applied") {
+      await acts.setActionStatus(proposal.actionId, "failed", null);
+      return "booking-failed";
+    }
+    await acts.finalizeBackfill({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      actionId: proposal.actionId,
+      patientSourceId: candidate.patientSourceId,
+      workflowId: wfId,
+      startsAt: input.startsAt
+    });
+    return "booked";
   }
 
-  // 4. Book it: durable command to the edge, confirmed by ack from OpenDental.
-  const commandId = await acts.issueBookingCommand({
-    orgId: input.orgId,
-    locationId: input.locationId,
-    workflowId: wfId,
-    patientSourceId: proposal.patientSourceId,
-    providerSourceId: input.providerSourceId,
-    operatorySourceId: input.operatorySourceId,
-    startsAt: input.startsAt,
-    minutes: input.minutes,
-    procDescript: input.procDescript
-  });
-
-  let status = "pending";
-  for (let i = 0; i < 60; i++) {
-    status = await acts.getCommandStatus(commandId);
-    if (status === "applied" || status === "failed") break;
-    await sleep("3 seconds");
-  }
-  if (status !== "applied") {
-    await acts.setActionStatus(proposal.actionId, "failed", null);
-    return "booking-failed";
-  }
-
-  await acts.finalizeBackfill({
-    orgId: input.orgId,
-    locationId: input.locationId,
-    actionId: proposal.actionId,
-    patientSourceId: proposal.patientSourceId,
-    workflowId: wfId,
-    startsAt: input.startsAt
-  });
-  return "booked";
+  // Every candidate declined or timed out — the slot dies with the list.
+  await acts.setActionStatus(proposal.actionId, "expired", null);
+  return "exhausted";
 }
 
 export interface ClaimFollowUpInput {
@@ -439,4 +459,297 @@ export async function recallCampaign(input: RecallCampaignInput): Promise<string
   }
   await acts.setActionStatus(plan.actionId, "executed", null);
   return `sent-${sent}`;
+}
+
+// --- C3: reschedule / slot-offer conversation --------------------------------------
+
+export interface RescheduleInput {
+  orgId: number;
+  locationId: number;
+  siteKey: string;
+  patientSourceId: number;
+  /** Move this appointment (CHANGE reply / reschedule request). */
+  appointmentSourceId?: number | null;
+  /** Or: schedule this planned procedure (C5 outreach YES). */
+  procedureSourceId?: number | null;
+}
+
+// "Reply CHANGE" finally does what the confirmation SMS promises. One
+// workflow covers both modes: rescheduling an existing appointment (break old
+// + book new) and scheduling planned treatment (book only). The slot finder
+// is deterministic — no LLM anywhere in this conversation. Approval policy:
+// like-for-like moves ≤14 days out auto-proceed (the slot finder only offers
+// those); everything else lands on a task for staff.
+export async function rescheduleConversation(input: RescheduleInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  const smsReply = smsReplyGate();
+
+  // On a dead end (no appointment, no slots) the activity creates the task
+  // itself — it has the patient context the workflow lacks.
+  const plan = await acts.findSlotCandidates({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    patientSourceId: input.patientSourceId,
+    appointmentSourceId: input.appointmentSourceId ?? null,
+    procedureSourceId: input.procedureSourceId ?? null
+  });
+  if (!plan || plan.slots.length === 0) return "no-slots";
+
+  const menu = plan.slots.map((s, i) => `${i + 1}) ${s.label}`).join("  ");
+  const nums = plan.slots.map((_, i) => String(i + 1));
+  const choiceText = nums.length === 1 ? "1" : `${nums.slice(0, -1).join(", ")} or ${nums[nums.length - 1]}`;
+  await acts.sendOutreachSms({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    patientSourceId: input.patientSourceId,
+    body:
+      `Hi ${plan.patientName.split(" ")[0]}, here are our next openings for your ` +
+      `${plan.procDescript}: ${menu}. Reply ${choiceText} to book.`,
+    workflowId: wfId
+  });
+
+  // Parse the pick; one clarifying re-ask on ambiguity, then hand to a human.
+  let choice: number | null = null;
+  for (let ask = 0; ask < 2 && choice === null; ask++) {
+    smsReply.value = null;
+    const got = await condition(() => {
+      const r = readReply(smsReply);
+      return r !== null && (r.patientSourceId ?? input.patientSourceId) === input.patientSourceId;
+    }, "4 hours");
+    if (!got) break;
+    const m = readReply(smsReply)!.body.trim().match(/^([1-3])\b/);
+    if (m && Number(m[1]) <= plan.slots.length) {
+      choice = Number(m[1]) - 1;
+    } else if (ask === 0) {
+      await acts.sendOutreachSms({
+        orgId: input.orgId,
+        locationId: input.locationId,
+        patientSourceId: input.patientSourceId,
+        body: `Sorry, I didn't catch that — just reply ${choiceText} to pick a time, and we'll take care of the rest.`,
+        workflowId: wfId
+      });
+    }
+  }
+  if (choice === null) {
+    await acts.createTask({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      type: "patient_question",
+      title: `Scheduling needs a human: ${plan.patientName}`,
+      body: `Offered slots for ${plan.procDescript} (${menu}) but got no usable reply. Call the patient to finish scheduling.`,
+      priority: "normal",
+      assigneeRole: "staff",
+      createdBy: "agent:scheduling",
+      workflowId: wfId,
+      resourceType: "patient",
+      resourceId: String(input.patientSourceId)
+    });
+    return "handed-off";
+  }
+
+  const slot = plan.slots[choice];
+  const { bookingCommandId } = await acts.issueRescheduleCommands({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    workflowId: wfId,
+    patientSourceId: input.patientSourceId,
+    appointmentSourceId: plan.appointmentSourceId,
+    slot,
+    procDescript: plan.procDescript
+  });
+  let status = "pending";
+  for (let i = 0; i < 60; i++) {
+    status = await acts.getCommandStatus(bookingCommandId);
+    if (status === "applied" || status === "failed") break;
+    await sleep("3 seconds");
+  }
+  if (status !== "applied") {
+    await acts.finalizeReschedule({
+      orgId: input.orgId, locationId: input.locationId, workflowId: wfId,
+      patientSourceId: input.patientSourceId, appointmentSourceId: plan.appointmentSourceId,
+      slot, outcome: "failed"
+    });
+    return "booking-failed";
+  }
+  await acts.sendOutreachSms({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    patientSourceId: input.patientSourceId,
+    body: `You're all set — see you ${slot.label}. Reply CHANGE if you need to reschedule.`,
+    workflowId: wfId
+  });
+  await acts.finalizeReschedule({
+    orgId: input.orgId, locationId: input.locationId, workflowId: wfId,
+    patientSourceId: input.patientSourceId, appointmentSourceId: plan.appointmentSourceId,
+    slot, outcome: "booked"
+  });
+  return "booked";
+}
+
+// --- C5: unscheduled-treatment outreach ---------------------------------------------
+
+export interface TreatmentOutreachInput {
+  orgId: number;
+  locationId: number;
+  siteKey: string;
+  batchSize?: number;
+}
+
+// "Dr. Patel planned a crown 3 months ago and it never got scheduled." A thin
+// feature over the proven backfill rails: rank the planned-unscheduled
+// backlog by fee × age, one batch approval card, SMS outreach, and each YES
+// hands off to a slot-offer conversation (C3) that books through the PMS.
+export async function treatmentOutreach(input: TreatmentOutreachInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  const approval = approvalGate();
+  const smsReply = smsReplyGate();
+
+  const plan = await acts.prepareTreatmentOutreach({
+    orgId: input.orgId,
+    locationId: input.locationId,
+    siteKey: input.siteKey,
+    batchSize: input.batchSize ?? 5,
+    workflowId: wfId
+  });
+  if (!plan) return "no-unscheduled-treatment";
+
+  const decided = await condition(() => approval.value !== null, "24 hours");
+  if (!decided || approval.value!.decision === "rejected") {
+    await acts.setActionStatus(plan.actionId, decided ? "rejected" : "expired", approval.value?.decidedBy ?? null);
+    return decided ? "rejected" : "expired";
+  }
+  await acts.setActionStatus(plan.actionId, "approved", approval.value!.decidedBy);
+
+  for (const r of plan.recipients) {
+    await acts.sendOutreachSms({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      patientSourceId: r.patientSourceId,
+      body: r.message,
+      workflowId: wfId
+    });
+    await sleep("2 seconds"); // rate limit between texts
+  }
+  await acts.setActionStatus(plan.actionId, "executed", null);
+
+  // Collect replies for the rest of the day; every YES spawns a detached
+  // slot-offer child so the booking conversation outlives this sweep.
+  const engaged = new Set<number>();
+  const deadline = Date.now() + 8 * 3_600_000;
+  while (Date.now() < deadline && engaged.size < plan.recipients.length) {
+    smsReply.value = null;
+    const got = await condition(() => readReply(smsReply) !== null, deadline - Date.now());
+    if (!got) break;
+    const reply = readReply(smsReply)!;
+    const pat = reply.patientSourceId;
+    if (!pat || engaged.has(pat)) continue;
+    const recipient = plan.recipients.find((x) => x.patientSourceId === pat);
+    if (!recipient || !/^\s*(y|yes|sure|ok)\b/i.test(reply.body)) continue;
+    engaged.add(pat);
+    await startChild(rescheduleConversation, {
+      workflowId: `slotoffer-${input.siteKey}-p${pat}-${wfId.slice(-8)}`,
+      args: [{
+        orgId: input.orgId,
+        locationId: input.locationId,
+        siteKey: input.siteKey,
+        patientSourceId: pat,
+        procedureSourceId: recipient.procedureSourceId
+      }],
+      parentClosePolicy: ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON
+    });
+  }
+  return `sent-${plan.recipients.length}-engaged-${engaged.size}`;
+}
+
+// --- C2: appointment reminders + confirmation write-back ----------------------------
+
+export interface ReminderSweepInput {
+  orgId: number;
+  locationId: number;
+  siteKey: string;
+}
+
+// "Tomorrow at 10am — reply C to confirm." Selects tomorrow's unconfirmed,
+// SMS-consented schedule; one batch approval card unless the location policy
+// autoSendReminders is set (the platform's first policy-driven auto-send).
+// C / YES replies flip the appointment to Confirmed INSIDE OpenDental via the
+// ConfirmAppointment edge command; CHANGE replies are picked up by the
+// inbound router, which starts a rescheduleConversation.
+export async function reminderSweep(input: ReminderSweepInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  const approval = approvalGate();
+  const smsReply = smsReplyGate();
+
+  const recipients = await acts.listReminderCandidates(input);
+  if (recipients.length === 0) return "nothing-to-remind";
+
+  const policy = await acts.getReminderPolicy({ locationId: input.locationId });
+  let actionId: number | null = null;
+  if (!policy.autoSend) {
+    const batch = await acts.prepareReminderBatch({ ...input, workflowId: wfId, recipients });
+    actionId = batch.actionId;
+    const decided = await condition(() => approval.value !== null, "12 hours");
+    if (!decided || approval.value!.decision === "rejected") {
+      await acts.setActionStatus(actionId, decided ? "rejected" : "expired", approval.value?.decidedBy ?? null);
+      return decided ? "rejected" : "expired";
+    }
+    await acts.setActionStatus(actionId, "approved", approval.value!.decidedBy);
+  }
+
+  let sent = 0;
+  for (const r of recipients) {
+    await acts.sendOutreachSms({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      patientSourceId: r.patientSourceId,
+      body: r.message,
+      workflowId: wfId
+    });
+    sent++;
+    await sleep("2 seconds"); // rate limit between texts
+  }
+  if (actionId !== null) await acts.setActionStatus(actionId, "executed", null);
+
+  // Park for confirmations until the evening cap. Each C/YES write-backs
+  // Confirmed to the PMS; the schedule badge updates on the next sync tick.
+  const confirmed = new Set<number>();
+  const deadline = Date.now() + 6 * 3_600_000;
+  while (Date.now() < deadline && confirmed.size < recipients.length) {
+    smsReply.value = null;
+    const got = await condition(() => readReply(smsReply) !== null, deadline - Date.now());
+    if (!got) break;
+    const reply = readReply(smsReply)!;
+    const pat = reply.patientSourceId;
+    if (!pat || confirmed.has(pat)) continue;
+    const r = recipients.find((x) => x.patientSourceId === pat);
+    if (!r || !/^\s*(c|confirm|y|yes)\b/i.test(reply.body)) continue;
+    const res = await acts.confirmAppointment({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      appointmentSourceId: r.appointmentSourceId,
+      patientSourceId: pat,
+      workflowId: wfId
+    });
+    if (res === "applied") confirmed.add(pat);
+  }
+  return `sent-${sent}-confirmed-${confirmed.size}`;
+}
+
+// --- C1: morning huddle digest -------------------------------------------------------
+
+export interface MorningHuddleInput {
+  orgId: number;
+  locationId: number;
+  siteKey: string;
+}
+
+// Office manager at 7am: one panel that says what's broken today and what to
+// do about it. Refreshes no-show risk first (C4 feeds the risk list), then a
+// single idempotent activity gathers the facts, drafts the narrative
+// (agent or template), and upserts huddle_digests. Zero writes to the PMS.
+export async function morningHuddle(input: MorningHuddleInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  await acts.scoreNoShowRisk({ orgId: input.orgId, locationId: input.locationId, daysAhead: 3 });
+  const digest = await acts.generateHuddleDigest({ ...input, workflowId: wfId });
+  return `digest-${digest.date}-actions-${digest.actionCount}`;
 }

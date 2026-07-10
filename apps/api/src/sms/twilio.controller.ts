@@ -9,11 +9,11 @@ import { Controller, Inject, Logger, Post, Req, Res } from "@nestjs/common";
 import type { Request, Response } from "express";
 import twilio from "twilio";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { patients, smsMessages } from "@dental/db";
+import { locations, patients, smsMessages } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
-import { TemporalService } from "../temporal/temporal.service";
 import { twilioConfig, twilioEnabled } from "./sms.service";
+import { InboundRouterService } from "./inbound-router.service";
 
 @Controller("twilio")
 export class TwilioController {
@@ -22,7 +22,7 @@ export class TwilioController {
   constructor(
     @Inject(DB) private db: Db,
     private audit: AuditService,
-    private temporal: TemporalService
+    private inboundRouter: InboundRouterService
   ) {}
 
   private verify(req: Request, res: Response, path: string): boolean {
@@ -108,13 +108,19 @@ export class TwilioController {
       resourceId: String(chosen.sourceId), purpose: "inbound patient reply"
     });
 
-    if (lastOutbound?.workflowId) {
-      try {
-        await this.temporal.signalSmsReply(lastOutbound.workflowId, text);
-      } catch {
-        // workflow may have completed/expired; the message is still recorded
-      }
-    }
+    // Keyword fast-path (CHANGE → reschedule) + reply threading (C3).
+    const [loc] = await this.db
+      .select({ key: locations.key })
+      .from(locations)
+      .where(eq(locations.id, chosen.locationId));
+    await this.inboundRouter.route({
+      orgId: chosen.orgId,
+      locationId: chosen.locationId,
+      siteKey: loc?.key ?? "",
+      patientSourceId: chosen.sourceId,
+      body: text,
+      lastWorkflowId: lastOutbound?.workflowId ?? null
+    });
     return res.send("<Response></Response>");
   }
 

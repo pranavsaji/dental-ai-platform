@@ -10,6 +10,8 @@ export interface SchedulingCandidate {
   phone: string;
   overdueSince: string | null;
   lastVisit: string | null;
+  // C4: chronic no-shows get deprioritized in backfill ranking.
+  priorNoShows?: number;
 }
 
 export interface SchedulingProposal {
@@ -173,6 +175,98 @@ export class AgentsClient {
       return (await res.json()) as any;
     } catch (err) {
       this.log.warn(`appeal-draft agent unavailable (${(err as Error).message}); using template`);
+      return fallback();
+    }
+  }
+
+  // --- Phase C ops agent surfaces ------------------------------------------------
+
+  async draftTreatmentOutreach(input: {
+    locationName: string;
+    batchSize: number;
+    candidates: Array<{
+      patientSourceId: number; name: string; procCode: string;
+      description: string; fee: number; ageDays: number;
+    }>;
+  }): Promise<{ picks: Array<{ patientSourceId: number; message: string }>; rationale: string; usedLlm: boolean }> {
+    const template = (c: (typeof input.candidates)[number]) =>
+      `Hi ${c.name.split(" ")[0]}, this is ${input.locationName}. Dr.'s notes show your ` +
+      `${c.description.toLowerCase()} from ${Math.round(c.ageDays / 7)} weeks ago is still waiting to be ` +
+      `scheduled. Reply YES and we'll text you a few times that work, or call us anytime.`;
+    const fallback = () => ({
+      picks: input.candidates.slice(0, input.batchSize)
+        .map((c) => ({ patientSourceId: c.patientSourceId, message: template(c) })),
+      rationale: "Deterministic ranking: fee × plan age.",
+      usedLlm: false
+    });
+    try {
+      const res = await fetch(`${this.baseUrl}/scheduling/outreach`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(90_000)
+      });
+      if (!res.ok) throw new Error(`agents service HTTP ${res.status}`);
+      const out = (await res.json()) as { picks: Array<{ patientSourceId: number; message: string }>; rationale: string; usedLlm: boolean };
+      const valid = out.picks.filter((p) =>
+        input.candidates.some((c) => c.patientSourceId === p.patientSourceId) && p.message?.trim());
+      if (valid.length === 0) throw new Error("agent returned no valid picks");
+      return { ...out, picks: valid };
+    } catch (err) {
+      this.log.warn(`outreach agent unavailable (${(err as Error).message}); using fee×age ranking`);
+      return fallback();
+    }
+  }
+
+  async draftHuddle(input: {
+    locationName: string;
+    date: string;
+    data: Record<string, unknown>;
+  }): Promise<{
+    narrative: string;
+    actions: Array<{ title: string; priority: "low" | "normal" | "high" | "urgent"; taskType: string }>;
+    usedLlm: boolean;
+  }> {
+    const fallback = () => {
+      const d = input.data as any;
+      const parts: string[] = [];
+      parts.push(
+        `${d.schedule.appointments} appointments today` +
+        (d.schedule.firstStart ? ` starting ${d.schedule.firstStart}` : "") +
+        `; ${d.schedule.unconfirmed} unconfirmed and about ${Math.round(d.schedule.openChairMinutes / 60)}h of open chair time.`
+      );
+      if (d.schedule.highRisk.length > 0) {
+        parts.push(`No-show risk: ${d.schedule.highRisk.map((r: any) => `${r.patientName} at ${r.startsAt}`).join(", ")} — double-confirm by phone.`);
+      }
+      if (d.eligibilityGaps > 0) parts.push(`${d.eligibilityGaps} of today's patients lack a green insurance check.`);
+      parts.push(`Unscheduled treatment backlog: ${d.unscheduledTreatment.count} plans worth $${d.unscheduledTreatment.value}.`);
+      parts.push(
+        `Billing: ${d.claims.open} open claims ($${d.claims.openValue})` +
+        (d.claims.openDenials > 0 ? `, ${d.claims.openDenials} unresolved denials` : "") +
+        (d.claims.preauthsNeedingInfo > 0 ? `, ${d.claims.preauthsNeedingInfo} pre-auths waiting on documents` : "") + "."
+      );
+      parts.push(`Yesterday: $${d.yesterday.production} produced, $${d.yesterday.collections} collected. ${d.tasks.open} open tasks${d.tasks.urgent > 0 ? ` (${d.tasks.urgent} urgent)` : ""}.`);
+      const actions: Array<{ title: string; priority: "low" | "normal" | "high" | "urgent"; taskType: string }> = [];
+      for (const r of d.schedule.highRisk) {
+        actions.push({ title: `Call to double-confirm ${r.patientName} (${r.startsAt}, risk ${Math.round(r.risk * 100)}%)`, priority: "high", taskType: "huddle_action" });
+      }
+      if (d.schedule.unconfirmed > 0) actions.push({ title: `Run the reminder sweep — ${d.schedule.unconfirmed} of today/tomorrow unconfirmed`, priority: "normal", taskType: "huddle_action" });
+      if (d.eligibilityGaps > 0) actions.push({ title: `Verify insurance for ${d.eligibilityGaps} of today's patients`, priority: "high", taskType: "huddle_action" });
+      if (d.unscheduledTreatment.count > 0) actions.push({ title: `Run treatment outreach — $${d.unscheduledTreatment.value} unscheduled`, priority: "normal", taskType: "huddle_action" });
+      if (d.claims.openDenials > 0) actions.push({ title: `Work ${d.claims.openDenials} unresolved denials in /billing`, priority: "high", taskType: "huddle_action" });
+      return { narrative: parts.join(" "), actions: actions.slice(0, 5), usedLlm: false };
+    };
+    try {
+      const res = await fetch(`${this.baseUrl}/ops/huddle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(90_000)
+      });
+      if (!res.ok) throw new Error(`agents service HTTP ${res.status}`);
+      return (await res.json()) as any;
+    } catch (err) {
+      this.log.warn(`huddle agent unavailable (${(err as Error).message}); using template digest`);
       return fallback();
     }
   }

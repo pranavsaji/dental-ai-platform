@@ -5,6 +5,7 @@ import { AuthController } from "./auth/auth";
 import { OidcService } from "./auth/oidc.service";
 import { SsoController } from "./auth/sso.controller";
 import { SmsService } from "./sms/sms.service";
+import { InboundRouterService } from "./sms/inbound-router.service";
 import { TwilioController } from "./sms/twilio.controller";
 import { EdgeController } from "./edge/edge.controller";
 import { EdgeAuthGuard } from "./edge/edge-auth.guard";
@@ -36,6 +37,7 @@ import { TemporalService } from "./temporal/temporal.service";
     AuditService,
     OidcService,
     SmsService,
+    InboundRouterService,
     EdgeAuthGuard,
     IngestService,
     CommandsService,

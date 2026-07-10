@@ -83,6 +83,37 @@ export const SCENARIOS: Record<string, Scenario> = {
     }
   },
 
+  "treatment-backlog": {
+    name: "treatment-backlog",
+    description: "Backdate 3 planned-but-unscheduled treatments 30–90 days — primes unscheduled-treatment outreach (C5).",
+    async run(rng, ops) {
+      const log: string[] = [];
+      // Prefer patients with no upcoming visit — outreach (C5) skips anyone
+      // already on the schedule, so those are the ones that demo the flow.
+      const booked = new Set((await ops.listScheduled(0, 30)).map((a) => a.patNum));
+      const all = (await ops.listPatients()).filter((p) => p.planNum > 0);
+      const insured = all.filter((p) => !booked.has(p.patNum));
+      if (insured.length === 0) insured.push(...all);
+      if (insured.length === 0) {
+        log.push("no insured patients — run the seed first");
+        return log;
+      }
+      const codes = ["D2740", "D4341", "D2391"]
+        .map((c) => ops.codes().find((x) => x.code === c)!)
+        .filter(Boolean);
+      for (const code of codes) {
+        const pat = rng.pick(insured);
+        const tooth = code.code === "D2391" || code.code === "D2740" ? rng.pick(["3", "14", "19", "30"]) : "";
+        const daysAgo = rng.int(30, 90);
+        const procNum = await ops.planProcedure({
+          patNum: pat.patNum, provNum: rng.int(1, 2), code, toothNum: tooth, daysAgo
+        });
+        log.push(`backdated plan: ${code.code} (${code.descript}) for patient ${pat.patNum}, ${daysAgo} days ago — procedure ${procNum}`);
+      }
+      return log;
+    }
+  },
+
   "no-show-week": {
     name: "no-show-week",
     description: "Several patients silently miss appointments — primes no-show risk scoring (C4).",

@@ -66,6 +66,20 @@ interface EligRow {
   checkedAt: string;
 }
 
+interface UnscheduledRow {
+  procedureSourceId: number;
+  patientSourceId: number;
+  patientName: string;
+  procCode: string;
+  description: string;
+  toothNum: string;
+  fee: number;
+  plannedOn: string | null;
+  ageDays: number;
+  lastContactAt: string | null;
+  score: number;
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   missing_documentation: "Missing documentation",
   frequency: "Frequency",
@@ -91,6 +105,7 @@ export default function BillingPage() {
   const [denials, setDenials] = useState<DenialRow[]>([]);
   const [preauthRows, setPreauthRows] = useState<PreauthRow[]>([]);
   const [exceptions, setExceptions] = useState<EligRow[]>([]);
+  const [unscheduled, setUnscheduled] = useState<UnscheduledRow[]>([]);
   const [bucket, setBucket] = useState("");
   const [sort, setSort] = useState("priority");
   const [busy, setBusy] = useState<string | null>(null);
@@ -108,6 +123,7 @@ export default function BillingPage() {
     api<EligRow[]>(`/portal/billing/eligibility?${loc}`)
       .then((rows) => setExceptions(rows.filter((r) => r.status !== "verified")))
       .catch(() => {});
+    api<UnscheduledRow[]>(`/portal/billing/unscheduled?${loc}`).then(setUnscheduled).catch(() => {});
   }, [location, bucket, sort]);
 
   useEffect(() => {
@@ -124,6 +140,19 @@ export default function BillingPage() {
       setNotice(`Follow-up workflow started for claim ${sourceId} — review the drafted letter in Approvals.`);
     } catch (e) {
       setNotice(`Could not start follow-up: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runOutreach() {
+    if (!location) return;
+    setBusy("outreach");
+    try {
+      await api(`/portal/ops/treatment-outreach?locationId=${location.id}`, { method: "POST" });
+      setNotice("Treatment outreach started — review the batch in Approvals; YES replies get slot offers by text.");
+    } catch (e) {
+      setNotice(`Could not start outreach: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
@@ -336,6 +365,56 @@ export default function BillingPage() {
               ))}
             </tbody>
           </table>
+        )}
+      </Card>
+
+      {/* Unscheduled treatment (C5) */}
+      <Card
+        title="Unscheduled treatment"
+        className="rise rise-3 mb-6"
+        action={
+          <button
+            disabled={busy === "outreach"}
+            onClick={runOutreach}
+            className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2 disabled:opacity-50"
+          >
+            ✳ Run treatment outreach
+          </button>
+        }
+      >
+        {unscheduled.length === 0 ? (
+          <Empty text="No planned-but-unscheduled treatment. Treatment plans without a booked visit land here." />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-line/70">
+                  <Th>Patient</Th><Th>Procedure</Th><Th>Fee</Th><Th>Planned</Th><Th>Age</Th><Th>Last contact</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line/50">
+                {unscheduled.slice(0, 15).map((u) => (
+                  <tr key={u.procedureSourceId} className="hover:bg-mint/25">
+                    <Td>
+                      <Link href={`/patients/${location!.id}/${u.patientSourceId}`} className="font-medium hover:text-teal">
+                        {u.patientName}
+                      </Link>
+                    </Td>
+                    <Td className="text-ink-soft">
+                      {u.description}
+                      <span className="num ml-1 text-[11px] text-ink-faint">
+                        {u.procCode}{u.toothNum ? ` · tooth ${u.toothNum}` : ""}
+                      </span>
+                    </Td>
+                    <Td className="num">{fmtMoney(u.fee)}</Td>
+                    <Td className="text-ink-soft">{fmtDate(u.plannedOn)}</Td>
+                    <Td className="num text-ink-soft">{u.ageDays}d</Td>
+                    <Td className="text-ink-soft">{u.lastContactAt ? fmtDate(u.lastContactAt) : "—"}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

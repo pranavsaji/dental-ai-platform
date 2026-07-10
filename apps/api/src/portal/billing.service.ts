@@ -1,7 +1,8 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
 import {
-  claimDenials, claims, eligibilityChecks, insPlans, patients, preauths
+  appointments, claimDenials, claims, commLogs, eligibilityChecks, insPlans,
+  patients, preauths, procedureCodes, procedures
 } from "@dental/db";
 import { DB, type Db } from "../db";
 
@@ -209,6 +210,83 @@ export class BillingService {
       .where(eq(preauths.locationId, locationId))
       .orderBy(desc(preauths.createdAt))
       .limit(100);
+  }
+
+  /**
+   * Unscheduled treatment backlog (C5): planned procedures whose patient has
+   * no future appointment, ranked by fee × age — the same inventory the
+   * treatmentOutreach workflow works from, plus last-contact context.
+   */
+  async listUnscheduledTreatment(locationId: number) {
+    const withUpcoming = this.db
+      .select({ pat: appointments.patientSourceId })
+      .from(appointments)
+      .where(and(
+        eq(appointments.locationId, locationId),
+        eq(appointments.status, "scheduled"),
+        sql`${appointments.startsAt} > now()`
+      ));
+    const rows = await this.db
+      .select({
+        procedureSourceId: procedures.sourceId,
+        patientSourceId: procedures.patientSourceId,
+        procDate: procedures.procDate,
+        fee: procedures.fee,
+        toothNum: procedures.toothNum,
+        procCode: procedureCodes.procCode,
+        description: procedureCodes.description,
+        patientFirst: patients.firstName,
+        patientLast: patients.lastName
+      })
+      .from(procedures)
+      .innerJoin(patients, and(
+        eq(patients.locationId, procedures.locationId),
+        eq(patients.sourceId, procedures.patientSourceId)))
+      .leftJoin(procedureCodes, and(
+        eq(procedureCodes.locationId, procedures.locationId),
+        eq(procedureCodes.sourceId, procedures.codeSourceId)))
+      .where(and(
+        eq(procedures.locationId, locationId),
+        eq(procedures.status, "planned"),
+        eq(patients.status, "active"),
+        notInArray(procedures.patientSourceId, withUpcoming)
+      ))
+      .limit(300);
+
+    const patIds = [...new Set(rows.map((r) => r.patientSourceId))];
+    const lastContact = new Map<number, Date>();
+    if (patIds.length > 0) {
+      const contacts = await this.db
+        .select({
+          patientSourceId: commLogs.patientSourceId,
+          last: sql<string>`max(${commLogs.happenedAt})`
+        })
+        .from(commLogs)
+        .where(and(eq(commLogs.locationId, locationId), inArray(commLogs.patientSourceId, patIds)))
+        .groupBy(commLogs.patientSourceId);
+      for (const c of contacts) lastContact.set(c.patientSourceId, new Date(c.last));
+    }
+
+    const now = Date.now();
+    return rows
+      .map((r) => {
+        const age = r.procDate ? Math.max(1, Math.floor((now - new Date(r.procDate).getTime()) / 86_400_000)) : 1;
+        return {
+          procedureSourceId: r.procedureSourceId,
+          patientSourceId: r.patientSourceId,
+          patientName: `${r.patientFirst} ${r.patientLast}`.trim(),
+          procCode: r.procCode ?? "",
+          description: r.description ?? "planned procedure",
+          toothNum: r.toothNum,
+          fee: r.fee,
+          plannedOn: r.procDate,
+          ageDays: age,
+          lastContactAt: lastContact.get(r.patientSourceId)?.toISOString() ?? null,
+          score: Math.round(r.fee * age)
+        };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 100);
   }
 
   /**

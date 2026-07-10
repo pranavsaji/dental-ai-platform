@@ -1,5 +1,5 @@
 import {
-  BadRequestException, Body, Controller, Param, ParseIntPipe, Post, Query, UseGuards
+  BadRequestException, Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
@@ -43,6 +43,76 @@ export class OpsController {
     await this.audit.log({
       orgId: user.orgId, locationId: loc.id, actorType: "user", actor: user.email,
       action: "workflow.started.claimFollowUp", resource: "workflow", resourceId: workflowId
+    });
+    return { workflowId };
+  }
+
+  // --- Phase C ops workflows -------------------------------------------------
+
+  // C1: manual huddle trigger (the cron fires at 06:00; demos shouldn't wait).
+  @Post("huddle")
+  async runHuddle(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const workflowId = `huddle-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
+    try {
+      await this.temporal.startWorkflow("morningHuddle", workflowId, {
+        orgId: user.orgId, locationId: loc.id, siteKey: loc.key
+      });
+    } catch (err) {
+      throw new BadRequestException(`could not start workflow: ${(err as Error).message}`);
+    }
+    await this.audit.log({
+      orgId: user.orgId, locationId: loc.id, actorType: "user", actor: user.email,
+      action: "workflow.started.morningHuddle", resource: "workflow", resourceId: workflowId
+    });
+    return { workflowId };
+  }
+
+  // C1: read the digest for a date (default today).
+  @Get("huddle")
+  async getHuddle(
+    @CurrentUser() user: SessionUser,
+    @Query("locationId") locationId?: string,
+    @Query("date") date?: string
+  ) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    return this.portal.huddleDigest(loc.id, date);
+  }
+
+  // C2: manual reminder sweep (the cron fires at 16:00 for T+1).
+  @Post("reminder-sweep")
+  async reminderSweep(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const workflowId = `remind-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
+    try {
+      await this.temporal.startWorkflow("reminderSweep", workflowId, {
+        orgId: user.orgId, locationId: loc.id, siteKey: loc.key
+      });
+    } catch (err) {
+      throw new BadRequestException(`could not start workflow: ${(err as Error).message}`);
+    }
+    await this.audit.log({
+      orgId: user.orgId, locationId: loc.id, actorType: "user", actor: user.email,
+      action: "workflow.started.reminderSweep", resource: "workflow", resourceId: workflowId
+    });
+    return { workflowId };
+  }
+
+  // C5: manual unscheduled-treatment outreach (the cron fires at 07:00).
+  @Post("treatment-outreach")
+  async treatmentOutreach(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const workflowId = `outreach-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
+    try {
+      await this.temporal.startWorkflow("treatmentOutreach", workflowId, {
+        orgId: user.orgId, locationId: loc.id, siteKey: loc.key, batchSize: 5
+      });
+    } catch (err) {
+      throw new BadRequestException(`could not start workflow: ${(err as Error).message}`);
+    }
+    await this.audit.log({
+      orgId: user.orgId, locationId: loc.id, actorType: "user", actor: user.email,
+      action: "workflow.started.treatmentOutreach", resource: "workflow", resourceId: workflowId
     });
     return { workflowId };
   }

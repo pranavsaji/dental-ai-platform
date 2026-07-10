@@ -80,6 +80,13 @@ export class MockAdapter implements PmsAdapter {
         });
         return { sourceId: command.appointmentSourceId };
       }
+      case "ConfirmAppointment": {
+        if (!this.practice.get("appointment", command.appointmentSourceId)) {
+          throw new Error(`AptNum ${command.appointmentSourceId} not found`);
+        }
+        this.practice.update("appointment", command.appointmentSourceId, { Confirmed: 2 });
+        return { sourceId: command.appointmentSourceId };
+      }
       case "AddCommlog": {
         const now = this.practice.now();
         const p = (n: number) => String(n).padStart(2, "0");

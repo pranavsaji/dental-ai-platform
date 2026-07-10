@@ -10,7 +10,10 @@ from .clinical import (
     PrevisitRequest, PrevisitResponse, SearchRequest, embed_pending, previsit, search,
 )
 from .config import MODEL, llm_available, provider_chain
-from .scheduling import ProposeRequest, ProposeResponse, propose
+from .huddle import HuddleRequest, HuddleResponse, draft_huddle
+from .scheduling import (
+    OutreachRequest, OutreachResponse, ProposeRequest, ProposeResponse, outreach, propose,
+)
 
 app = FastAPI(title="Dental AI Agents", version="0.1.0")
 
@@ -26,6 +29,19 @@ def scheduling_propose(req: ProposeRequest) -> ProposeResponse:
         return propose(req)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/scheduling/outreach", response_model=OutreachResponse)
+def scheduling_outreach(req: OutreachRequest) -> OutreachResponse:
+    try:
+        return outreach(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/ops/huddle", response_model=HuddleResponse)
+def ops_huddle(req: HuddleRequest) -> HuddleResponse:
+    return draft_huddle(req)
 
 
 @app.post("/billing/review", response_model=ReviewResponse)

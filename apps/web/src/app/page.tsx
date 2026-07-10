@@ -15,6 +15,17 @@ interface Overview {
   overdueRecalls: number;
   openClaims: number;
   openClaimsValue: number;
+  unscheduledTreatment: number;
+  unscheduledTreatmentValue: number;
+}
+
+// C1: the digest row from /portal/ops/huddle.
+interface Huddle {
+  date: string;
+  narrative: string;
+  actionItems: Array<{ title: string; priority: string; taskType: string }>;
+  usedLlm: boolean;
+  createdAt: string;
 }
 
 interface ScheduleResp {
@@ -30,7 +41,9 @@ export default function OverviewPage() {
   const { location } = useApp();
   const [ov, setOv] = useState<Overview | null>(null);
   const [sched, setSched] = useState<ScheduleResp | null>(null);
+  const [huddle, setHuddle] = useState<Huddle | null>(null);
   const [opsMsg, setOpsMsg] = useState("");
+  const [taskMsg, setTaskMsg] = useState("");
 
   async function runOps(path: string, label: string) {
     if (!location) return;
@@ -43,12 +56,36 @@ export default function OverviewPage() {
     }
   }
 
+  // C1: one-click task from a huddle action item.
+  async function createHuddleTask(item: { title: string; priority: string; taskType: string }) {
+    if (!location) return;
+    try {
+      await api(`/portal/tasks`, {
+        method: "POST",
+        body: JSON.stringify({
+          locationId: location.id,
+          type: item.taskType || "huddle_action",
+          title: item.title,
+          priority: item.priority,
+          body: `From the ${huddle?.date ?? ""} morning huddle.`
+        })
+      });
+      setTaskMsg(`Task created: ${item.title}`);
+    } catch (e: any) {
+      setTaskMsg(`Could not create task: ${e.message ?? e}`);
+    }
+  }
+
   useEffect(() => {
     if (!location) return;
+    const loadHuddle = () =>
+      api<Huddle | null>(`/portal/ops/huddle?locationId=${location.id}`).then(setHuddle).catch(() => {});
     api<Overview>(`/portal/overview?locationId=${location.id}`).then(setOv).catch(() => {});
     api<ScheduleResp>(`/portal/schedule?locationId=${location.id}`).then(setSched).catch(() => {});
+    loadHuddle();
     const t = setInterval(() => {
       api<Overview>(`/portal/overview?locationId=${location.id}`).then(setOv).catch(() => {});
+      loadHuddle();
     }, 15000);
     return () => clearInterval(t);
   }, [location]);
@@ -56,6 +93,55 @@ export default function OverviewPage() {
   return (
     <div>
       <PageTitle kicker="Control plane" title={location?.name ?? ""} />
+
+      {/* C1: morning huddle digest */}
+      <Card
+        title={huddle ? `Morning huddle — ${huddle.date}` : "Morning huddle"}
+        className="rise mb-6"
+        action={
+          <div className="flex items-center gap-2">
+            {huddle && (
+              <span className="text-[11px] text-ink-faint">
+                {huddle.usedLlm ? "agent narrative" : "template narrative"}
+              </span>
+            )}
+            <button
+              onClick={() => runOps("huddle", "Morning huddle")}
+              className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2"
+            >
+              ✳ {huddle ? "Refresh digest" : "Generate digest"}
+            </button>
+          </div>
+        }
+      >
+        {!huddle ? (
+          <Empty text="No digest yet today. The cron runs at 6:00 — or generate one now." />
+        ) : (
+          <div className="px-5 py-4">
+            <p className="max-w-3xl text-sm leading-relaxed text-ink">{huddle.narrative}</p>
+            {huddle.actionItems.length > 0 && (
+              <ul className="mt-4 space-y-1.5">
+                {huddle.actionItems.map((a, i) => (
+                  <li key={i} className="flex items-center gap-3 text-[13px]">
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full ${
+                      a.priority === "high" || a.priority === "urgent" ? "bg-coral" : "bg-teal"
+                    }`} />
+                    <span className="flex-1">{a.title}</span>
+                    <button
+                      onClick={() => createHuddleTask(a)}
+                      className="rounded-md border border-line px-2.5 py-1 text-[11px] text-ink-soft hover:border-teal hover:text-teal"
+                    >
+                      → task
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {taskMsg && <div className="mt-3 text-xs text-teal">{taskMsg}</div>}
+          </div>
+        )}
+      </Card>
+
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatTile label="Scheduled today" value={ov?.todayScheduled ?? "—"} detail="confirmed & unconfirmed" delay="rise-1" />
         <StatTile label="Next 7 days" value={ov?.upcoming7d ?? "—"} detail="upcoming appointments" delay="rise-2" />
@@ -77,20 +163,37 @@ export default function OverviewPage() {
           detail={ov ? `${fmtMoney(ov.openClaimsValue)} outstanding` : undefined}
           tone={ov && ov.openClaims > 0 ? "warn" : "default"} delay="rise-3"
         />
-        <div className="rise rise-4 col-span-2 flex flex-col justify-center gap-2 rounded-lg border border-dashed border-sage/70 bg-mint/20 px-5 py-4">
+        <StatTile
+          label="Unscheduled treatment" value={ov ? fmtMoney(ov.unscheduledTreatmentValue) : "—"}
+          detail={ov ? `${ov.unscheduledTreatment} planned procedures without a visit` : undefined}
+          tone={ov && ov.unscheduledTreatmentValue > 0 ? "warn" : "good"} delay="rise-3"
+        />
+        <div className="rise rise-4 flex flex-col justify-center gap-2 rounded-lg border border-dashed border-sage/70 bg-mint/20 px-5 py-4">
           <div className="text-[11px] uppercase tracking-[0.18em] text-teal">Agent operations</div>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => runOps("recall-campaign", "Recall campaign")}
               className="rounded-md bg-pine px-3.5 py-1.5 text-[13px] font-semibold text-white hover:bg-pine-2"
             >
-              ✳ Run recall campaign
+              ✳ Recall campaign
+            </button>
+            <button
+              onClick={() => runOps("treatment-outreach", "Treatment outreach")}
+              className="rounded-md bg-pine px-3.5 py-1.5 text-[13px] font-semibold text-white hover:bg-pine-2"
+            >
+              ✳ Treatment outreach
+            </button>
+            <button
+              onClick={() => runOps("reminder-sweep", "Reminder sweep")}
+              className="rounded-md border border-pine/30 bg-surface px-3.5 py-1.5 text-[13px] font-semibold text-pine hover:border-teal"
+            >
+              ✳ Reminder sweep
             </button>
             <button
               onClick={() => runOps("claim-followup", "Claim follow-up")}
               className="rounded-md border border-pine/30 bg-surface px-3.5 py-1.5 text-[13px] font-semibold text-pine hover:border-teal"
             >
-              ✳ Run claim follow-up
+              ✳ Claim follow-up
             </button>
           </div>
           {opsMsg && <div className="text-xs text-ink-soft">{opsMsg}</div>}

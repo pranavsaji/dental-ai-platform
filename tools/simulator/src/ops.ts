@@ -54,8 +54,10 @@ export interface PracticeOps {
   denyClaim(claimNum: number, carcCodes: string, note: string): Promise<void>;
   editPatientContact(patNum: number, patch: { wirelessPhone?: string; email?: string }): Promise<void>;
   recordPayment(p: { patNum: number; amount: number; payType: number; note: string; date: string }): Promise<number>;
-  /** Treatment-plan a procedure today (no appointment) — primes pre-auth (B3). */
-  planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number>;
+  /** Treatment-plan a procedure (no appointment). Today primes pre-auth (B3);
+   *  daysAgo > 7 backdates past the pre-auth freshness gate and primes the
+   *  unscheduled-treatment outreach backlog instead (C5). */
+  planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string; daysAgo?: number }): Promise<number>;
 }
 
 function fmtDate(d: Date): string {
@@ -203,15 +205,16 @@ export class InMemoryOps implements PracticeOps {
     });
   }
 
-  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number> {
+  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string; daysAgo?: number }): Promise<number> {
     const now = this.now();
+    const planned = new Date(now.getTime() - (p.daysAgo ?? 0) * 86_400_000);
     this.practice.insert("commlog", {
-      PatNum: p.patNum, CommDateTime: fmtDateTime(now), CommType: 3,
+      PatNum: p.patNum, CommDateTime: fmtDateTime(planned), CommType: 3,
       Note: `Treatment planned: ${p.code.descript}${p.toothNum ? ` tooth ${p.toothNum}` : ""}. Discussed findings and fees with patient.`,
       Mode_: 4, SentOrReceived: 0
     });
     return this.practice.insert("procedurelog", {
-      PatNum: p.patNum, AptNum: 0, ProcDate: fmtDate(now), ProcFee: p.code.fee,
+      PatNum: p.patNum, AptNum: 0, ProcDate: fmtDate(planned), ProcFee: p.code.fee,
       ProcStatus: 1, ProvNum: p.provNum, CodeNum: p.code.codeNum, ToothNum: p.toothNum, Surf: ""
     });
   }
@@ -370,16 +373,17 @@ export class MySqlOps implements PracticeOps {
     return res.insertId;
   }
 
-  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string }): Promise<number> {
+  async planProcedure(p: { patNum: number; provNum: number; code: SimCode; toothNum: string; daysAgo?: number }): Promise<number> {
+    const daysAgo = p.daysAgo ?? 0;
     await this.pool.execute(
       `INSERT INTO commlog (PatNum, CommDateTime, CommType, Note, Mode_, SentOrReceived)
-       VALUES (?, NOW(), 3, ?, 4, 0)`,
-      [p.patNum, `Treatment planned: ${p.code.descript}${p.toothNum ? ` tooth ${p.toothNum}` : ""}. Discussed findings and fees with patient.`]
+       VALUES (?, DATE_SUB(NOW(), INTERVAL ? DAY), 3, ?, 4, 0)`,
+      [p.patNum, daysAgo, `Treatment planned: ${p.code.descript}${p.toothNum ? ` tooth ${p.toothNum}` : ""}. Discussed findings and fees with patient.`]
     );
     const [res] = await this.pool.execute<any>(
       `INSERT INTO procedurelog (PatNum, AptNum, ProcDate, ProcFee, ProcStatus, ProvNum, CodeNum, ToothNum, Surf)
-       VALUES (?, 0, CURDATE(), ?, 1, ?, ?, ?, '')`,
-      [p.patNum, p.code.fee, p.provNum, await this.dbCodeNum(p.code.code), p.toothNum]
+       VALUES (?, 0, DATE_SUB(CURDATE(), INTERVAL ? DAY), ?, 1, ?, ?, ?, '')`,
+      [p.patNum, daysAgo, p.code.fee, p.provNum, await this.dbCodeNum(p.code.code), p.toothNum]
     );
     return res.insertId;
   }

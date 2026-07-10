@@ -70,7 +70,22 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
           draftAppeal: this.activities.draftAppeal.bind(this.activities),
           markAppealSent: this.activities.markAppealSent.bind(this.activities),
           checkAppeal: this.activities.checkAppeal.bind(this.activities),
-          resolveAppeal: this.activities.resolveAppeal.bind(this.activities)
+          resolveAppeal: this.activities.resolveAppeal.bind(this.activities),
+          // C4: no-show risk
+          scoreNoShowRisk: this.activities.scoreNoShowRisk.bind(this.activities),
+          // C5: unscheduled-treatment outreach
+          prepareTreatmentOutreach: this.activities.prepareTreatmentOutreach.bind(this.activities),
+          // C2: reminders + confirmation write-back
+          listReminderCandidates: this.activities.listReminderCandidates.bind(this.activities),
+          getReminderPolicy: this.activities.getReminderPolicy.bind(this.activities),
+          prepareReminderBatch: this.activities.prepareReminderBatch.bind(this.activities),
+          confirmAppointment: this.activities.confirmAppointment.bind(this.activities),
+          // C3: reschedule / slot-offer conversation
+          findSlotCandidates: this.activities.findSlotCandidates.bind(this.activities),
+          issueRescheduleCommands: this.activities.issueRescheduleCommands.bind(this.activities),
+          finalizeReschedule: this.activities.finalizeReschedule.bind(this.activities),
+          // C1: morning huddle
+          generateHuddleDigest: this.activities.generateHuddleDigest.bind(this.activities)
         }
       });
       void this.worker.run().catch((err) => this.log.error(`worker crashed: ${err.message}`));
@@ -104,32 +119,42 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
       });
     };
 
-    await this.ensureEligibilityCrons();
+    await this.ensureCrons();
   }
 
-  // Nightly per-location eligibility sweep (B2): first cron schedule in the
-  // codebase. 05:00 server-local; a manual trigger exists at
-  // POST /portal/ops/eligibility-sweep for demos and verification.
-  private async ensureEligibilityCrons(): Promise<void> {
+  // Per-location cron schedules, registered idempotently at boot:
+  //   05:00 insuranceVerification (B2)   06:00 morningHuddle (C1)
+  //   07:00 treatmentOutreach (C5)       16:00 reminderSweep for T+1 (C2)
+  // Manual triggers for all of them live under /portal/ops and /portal/billing.
+  private async ensureCrons(): Promise<void> {
     if (!this.client) return;
     try {
       const locs = await this.db.select().from(locations);
       for (const loc of locs) {
-        try {
-          await this.client.workflow.start("insuranceVerification", {
-            taskQueue: TASK_QUEUE,
-            workflowId: `elig-sweep-${loc.key}`,
-            cronSchedule: "0 5 * * *",
-            args: [{ orgId: loc.orgId, locationId: loc.id, siteKey: loc.key, daysAhead: 3 }]
-          });
-          this.log.log(`registered nightly eligibility sweep for site ${loc.key}`);
-        } catch (err) {
-          if ((err as any).name === "WorkflowExecutionAlreadyStartedError" || (err as Error).message?.includes("already")) continue;
-          this.log.error(`eligibility cron for site ${loc.key}: ${(err as Error).message}`);
+        const base = { orgId: loc.orgId, locationId: loc.id, siteKey: loc.key };
+        const crons: Array<{ name: string; workflowId: string; schedule: string; arg: unknown }> = [
+          { name: "insuranceVerification", workflowId: `elig-sweep-${loc.key}`, schedule: "0 5 * * *", arg: { ...base, daysAhead: 3 } },
+          { name: "morningHuddle", workflowId: `huddle-${loc.key}`, schedule: "0 6 * * *", arg: base },
+          { name: "treatmentOutreach", workflowId: `treatment-outreach-${loc.key}`, schedule: "0 7 * * *", arg: base },
+          { name: "reminderSweep", workflowId: `remind-sweep-${loc.key}`, schedule: "0 16 * * *", arg: base }
+        ];
+        for (const cron of crons) {
+          try {
+            await this.client.workflow.start(cron.name, {
+              taskQueue: TASK_QUEUE,
+              workflowId: cron.workflowId,
+              cronSchedule: cron.schedule,
+              args: [cron.arg]
+            });
+            this.log.log(`registered cron ${cron.workflowId} (${cron.schedule})`);
+          } catch (err) {
+            if ((err as any).name === "WorkflowExecutionAlreadyStartedError" || (err as Error).message?.includes("already")) continue;
+            this.log.error(`cron ${cron.workflowId}: ${(err as Error).message}`);
+          }
         }
       }
     } catch (err) {
-      this.log.error(`could not register eligibility crons: ${(err as Error).message}`);
+      this.log.error(`could not register crons: ${(err as Error).message}`);
     }
   }
 
@@ -194,9 +219,11 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
     await this.client.workflow.getHandle(workflowId).signal("approval", { decision, decidedBy });
   }
 
-  async signalSmsReply(workflowId: string, body: string): Promise<void> {
+  // C3: replies carry the sender so batch workflows (reminders, outreach,
+  // backfill cascade) know WHO answered, not just that someone did.
+  async signalSmsReply(workflowId: string, body: string, patientSourceId?: number): Promise<void> {
     if (!this.client) throw new Error("Temporal not connected");
-    await this.client.workflow.getHandle(workflowId).signal("smsReply", { body });
+    await this.client.workflow.getHandle(workflowId).signal("smsReply", { body, patientSourceId });
   }
 
   // B3: resolving a task created by a parked workflow resumes that workflow.

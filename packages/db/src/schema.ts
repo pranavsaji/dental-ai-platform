@@ -27,6 +27,9 @@ export const locations = pgTable("locations", {
   integrationMode: text("integration_mode").notNull().default("unknown"), // api | mysql | mock | unknown
   integrationStatus: text("integration_status").notNull().default("unknown"), // live | degraded | stale | unknown
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  // C2: first policy-driven auto-send. False = reminder batches park on an
+  // approval card; true = the nightly sweep sends without a human gate.
+  autoSendReminders: boolean("auto_send_reminders").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (t) => [uniqueIndex("locations_key_uq").on(t.key)]);
 
@@ -126,7 +129,11 @@ export const appointments = pgTable("appointments", {
   operatorySourceId: bigint("operatory_source_id", { mode: "number" }).notNull(),
   providerSourceId: bigint("provider_source_id", { mode: "number" }).notNull(),
   note: text("note").notNull().default(""),
-  procDescript: text("proc_descript").notNull().default("")
+  procDescript: text("proc_descript").notNull().default(""),
+  // No-show risk (C4): stamped by the nightly sweep from computeNoShowRisk()
+  // in @dental/shared. factors is the explanation trail shown in the UI.
+  noShowRisk: doublePrecision("no_show_risk").notNull().default(0),
+  noShowFactors: jsonb("no_show_factors").notNull().default([])
 }, (t) => [
   uniqueIndex("appointments_loc_src_uq").on(t.locationId, t.sourceId),
   index("appointments_starts_idx").on(t.locationId, t.startsAt),
@@ -460,6 +467,22 @@ export const claimDenials = pgTable("claim_denials", {
   uniqueIndex("denials_loc_claim_uq").on(t.locationId, t.claimSourceId),
   index("denials_loc_status_idx").on(t.locationId, t.appealStatus)
 ]);
+
+// Morning huddle digests (C1): one per (location, day). data holds the exact
+// structured facts the narrative was drafted from (grounding discipline);
+// actionItems is the ranked list the UI turns into tasks one click at a time.
+export const huddleDigests = pgTable("huddle_digests", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  date: date("date").notNull(),
+  narrative: text("narrative").notNull().default(""),
+  data: jsonb("data").notNull().default({}),
+  actionItems: jsonb("action_items").notNull().default([]),
+  usedLlm: boolean("used_llm").notNull().default(false),
+  workflowId: text("workflow_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (t) => [uniqueIndex("huddle_loc_date_uq").on(t.locationId, t.date)]);
 
 // Clinical note embeddings for pgvector RAG (bge-small-en-v1.5 = 384 dims,
 // generated locally by the agents service — no external embedding API).

@@ -1,8 +1,8 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import { and, asc, count, desc, eq, gte, ilike, inArray, lt, lte, or, sql, sum } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, ilike, inArray, lt, lte, notInArray, or, sql, sum } from "drizzle-orm";
 import {
-  appointments, auditLog, claims, commLogs, insPlans, locations, operatories,
-  patPlans, patients, procedureCodes, procedures, providers, recalls
+  appointments, auditLog, claims, commLogs, huddleDigests, insPlans, locations,
+  operatories, patPlans, patients, procedureCodes, procedures, providers, recalls
 } from "@dental/db";
 import { DB, type Db } from "../db";
 import type { SessionUser } from "../auth/auth";
@@ -67,6 +67,21 @@ export class PortalService {
     const [openClaims] = await this.db.select({ n: count(), fees: sum(claims.claimFee) }).from(claims)
       .where(and(eq(claims.locationId, loc.id), inArray(claims.status, ["sent", "waiting"])));
 
+    // C5: value sitting in planned-but-unscheduled treatment — the top-ROI
+    // tile. Patients with any future scheduled appointment don't count.
+    const withUpcoming = this.db
+      .select({ pat: appointments.patientSourceId })
+      .from(appointments)
+      .where(and(scope, eq(appointments.status, "scheduled"), sql`${appointments.startsAt} > now()`));
+    const [unscheduled] = await this.db
+      .select({ n: count(), fees: sum(procedures.fee) })
+      .from(procedures)
+      .where(and(
+        eq(procedures.locationId, loc.id),
+        eq(procedures.status, "planned"),
+        notInArray(procedures.patientSourceId, withUpcoming)
+      ));
+
     return {
       location: { id: loc.id, key: loc.key, name: loc.name },
       todayScheduled: todayAppts.n,
@@ -75,8 +90,18 @@ export class PortalService {
       activePatients: patientCount.n,
       overdueRecalls: overdueRecalls.n,
       openClaims: openClaims.n,
-      openClaimsValue: Number(openClaims.fees ?? 0)
+      openClaimsValue: Number(openClaims.fees ?? 0),
+      unscheduledTreatment: unscheduled.n,
+      unscheduledTreatmentValue: Number(unscheduled.fees ?? 0)
     };
+  }
+
+  // C1: the digest panel on Overview. Defaults to today; history by date.
+  async huddleDigest(locationId: number, date?: string) {
+    const target = date ?? new Date().toISOString().slice(0, 10);
+    const [row] = await this.db.select().from(huddleDigests)
+      .where(and(eq(huddleDigests.locationId, locationId), eq(huddleDigests.date, target)));
+    return row ?? null;
   }
 
   async schedule(user: SessionUser, locationId: number | undefined, dateStr: string | undefined) {
@@ -94,6 +119,8 @@ export class PortalService {
         confirmed: appointments.confirmed,
         procDescript: appointments.procDescript,
         note: appointments.note,
+        noShowRisk: appointments.noShowRisk,
+        noShowFactors: appointments.noShowFactors,
         operatorySourceId: appointments.operatorySourceId,
         patientSourceId: appointments.patientSourceId,
         patientFirst: patients.firstName,

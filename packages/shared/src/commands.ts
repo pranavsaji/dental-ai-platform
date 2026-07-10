@@ -24,6 +24,13 @@ export const UpdateAppointmentStatusCommand = z.object({
   status: z.enum(["scheduled", "complete", "broken", "unscheduled"])
 });
 
+// C2: flip OpenDental's confirmation status (the Confirmed column), which is
+// separate from AptStatus — UpdateAppointmentStatus cannot express it.
+export const ConfirmAppointmentCommand = z.object({
+  type: z.literal("ConfirmAppointment"),
+  appointmentSourceId: z.number()
+});
+
 export const AddCommlogCommand = z.object({
   type: z.literal("AddCommlog"),
   patientSourceId: z.number(),
@@ -36,6 +43,7 @@ export const AddCommlogCommand = z.object({
 export const CommandPayload = z.discriminatedUnion("type", [
   BookAppointmentCommand,
   UpdateAppointmentStatusCommand,
+  ConfirmAppointmentCommand,
   AddCommlogCommand
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;

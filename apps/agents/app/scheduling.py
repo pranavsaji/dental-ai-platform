@@ -24,6 +24,8 @@ class Candidate(BaseModel):
     phone: str
     overdueSince: str | None = None
     lastVisit: str | None = None
+    # C4: chronic no-shows should not get first crack at an open slot.
+    priorNoShows: int = 0
 
 
 class Slot(BaseModel):
@@ -66,7 +68,8 @@ class _State(TypedDict):
 def _rank_node(state: _State) -> dict:
     req = state["request"]
     lines = "\n".join(
-        f"- patientSourceId={c.patientSourceId} | {c.name} | overdue since {c.overdueSince} | last visit {c.lastVisit}"
+        f"- patientSourceId={c.patientSourceId} | {c.name} | overdue since {c.overdueSince} | "
+        f"last visit {c.lastVisit} | prior no-shows {c.priorNoShows}"
         for c in req.candidates
     )
     result = invoke_structured(_Ranking, [
@@ -74,7 +77,8 @@ def _rank_node(state: _State) -> dict:
             "You are the scheduling agent for a dental group. A chair opened up due to a "
             "cancellation. Pick the single best patient to offer the slot to. Prefer the "
             "most overdue recall, but use judgment (a patient overdue for years is likely "
-            "lapsed; 6-18 months overdue converts best). You must pick from the list."
+            "lapsed; 6-18 months overdue converts best). Deprioritize patients with 2+ "
+            "prior no-shows — they burn the slot. You must pick from the list."
         )),
         HumanMessage(content=(
             f"Open slot: {req.slot.startsAt} ({req.slot.minutes} min, {req.slot.procDescript}) "
@@ -132,6 +136,105 @@ def _fallback(req: ProposeRequest) -> ProposeResponse:
         rationale="Deterministic fallback: most-overdue reachable candidate (no LLM key configured).",
         usedLlm=False,
     )
+
+
+# --- C5: unscheduled-treatment outreach -----------------------------------------
+# The platform ranks the backlog deterministically (fee × plan age); the agent
+# refines the order with conversion judgment and drafts the messages. Same
+# contract as everything else: template fallback, the LLM never gates the demo.
+
+
+class OutreachCandidate(BaseModel):
+    patientSourceId: int
+    name: str
+    procCode: str
+    description: str
+    fee: float
+    ageDays: int
+
+
+class OutreachRequest(BaseModel):
+    locationName: str
+    batchSize: int
+    candidates: list[OutreachCandidate]
+
+
+class OutreachPick(BaseModel):
+    patientSourceId: int
+    message: str
+
+
+class OutreachResponse(BaseModel):
+    picks: list[OutreachPick]
+    rationale: str
+    usedLlm: bool
+
+
+class _OutreachPlan(BaseModel):
+    picks: list[OutreachPick] = Field(
+        description="The patients to text, best conversion odds first, each with its SMS text"
+    )
+    rationale: str = Field(description="One or two sentences on the ordering")
+
+
+def _outreach_template(location_name: str, c: OutreachCandidate) -> str:
+    weeks = max(1, round(c.ageDays / 7))
+    return (
+        f"Hi {c.name.split(' ')[0]}, this is {location_name}. Dr.'s notes show your "
+        f"{c.description.lower()} from {weeks} weeks ago is still waiting to be scheduled. "
+        "Reply YES and we'll text you a few times that work, or call us anytime."
+    )
+
+
+def _outreach_fallback(req: OutreachRequest) -> OutreachResponse:
+    picks = [
+        OutreachPick(
+            patientSourceId=c.patientSourceId,
+            message=_outreach_template(req.locationName, c),
+        )
+        for c in req.candidates[: req.batchSize]
+    ]
+    return OutreachResponse(
+        picks=picks,
+        rationale="Deterministic ranking: fee × plan age.",
+        usedLlm=False,
+    )
+
+
+def outreach(req: OutreachRequest) -> OutreachResponse:
+    if not req.candidates:
+        raise ValueError("no candidates")
+    if not llm_available():
+        return _outreach_fallback(req)
+    try:
+        lines = "\n".join(
+            f"- patientSourceId={c.patientSourceId} | {c.name} | {c.description} ({c.procCode}) | "
+            f"${c.fee:.0f} | planned {c.ageDays} days ago"
+            for c in req.candidates
+        )
+        result = invoke_structured(_OutreachPlan, [
+            SystemMessage(content=(
+                f"You are the scheduling agent for a dental group. Pick up to {req.batchSize} "
+                "patients with planned-but-unscheduled treatment to text today, ordered by "
+                "conversion odds (recent-ish plans and higher-value treatment convert best; "
+                "plans older than a year are likely lapsed). Pick only from the list. For each, "
+                "draft a short, warm SMS: greet by first name, name the practice, reference the "
+                "planned treatment in plain words, ask them to reply YES to get scheduling "
+                "options. Under 320 characters, no emojis, no invented clinical details."
+            )),
+            HumanMessage(content=f"Practice: {req.locationName}\nBacklog:\n{lines}"),
+        ])
+        valid = [
+            p for p in result.picks
+            if any(c.patientSourceId == p.patientSourceId for c in req.candidates) and p.message.strip()
+        ]
+        if not valid:
+            return _outreach_fallback(req)
+        return OutreachResponse(picks=valid[: req.batchSize], rationale=result.rationale, usedLlm=True)
+    except Exception as exc:
+        resp = _outreach_fallback(req)
+        resp.rationale += f" (agent error: {type(exc).__name__})"
+        return resp
 
 
 def propose(req: ProposeRequest) -> ProposeResponse:

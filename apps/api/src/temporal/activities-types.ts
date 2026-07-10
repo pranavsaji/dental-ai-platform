@@ -15,11 +15,18 @@ export interface ProposeBackfillInput {
   workflowId: string;
 }
 
-export interface BackfillProposal {
-  actionId: number;
+export interface BackfillCandidate {
   patientSourceId: number;
   patientName: string;
   message: string;
+}
+
+// C3 cascade: the proposal carries the agent's full ranked list (best first,
+// with the agent-drafted message; the rest get templates). One approval covers
+// the batch — the workflow walks the list until someone says yes.
+export interface BackfillProposal {
+  actionId: number;
+  candidates: BackfillCandidate[];
 }
 
 // --- Phase B: billing suite ----------------------------------------------------
@@ -52,6 +59,44 @@ export interface DenialRecord {
   category: string;
   appealable: boolean;
   summary: string;
+}
+
+// --- Phase C: ops suite ----------------------------------------------------------
+
+export interface OutreachRecipient {
+  patientSourceId: number;
+  patientName: string;
+  procedureSourceId: number;
+  procCode: string;
+  description: string;
+  fee: number;
+  ageDays: number;
+  message: string;
+}
+
+export interface ReminderRecipient {
+  patientSourceId: number;
+  patientName: string;
+  appointmentSourceId: number;
+  startsAt: string;
+  message: string;
+}
+
+export interface SlotOffer {
+  startsAt: string;
+  minutes: number;
+  operatorySourceId: number;
+  providerSourceId: number;
+  label: string;
+}
+
+export interface ReschedulePlan {
+  patientSourceId: number;
+  patientName: string;
+  /** Set when moving an existing appointment; null when scheduling planned treatment. */
+  appointmentSourceId: number | null;
+  procDescript: string;
+  slots: SlotOffer[];
 }
 
 export interface ActivitiesInterface {
@@ -156,4 +201,51 @@ export interface ActivitiesInterface {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
     denialId: number; claimSourceId: number; outcome: "won" | "lost" | "stalled";
   }): Promise<void>;
+
+  // --- C4: no-show risk ----------------------------------------------------------
+  /** Score upcoming scheduled appointments; returns how many rows were stamped. */
+  scoreNoShowRisk(input: {
+    orgId: number; locationId: number; daysAhead: number;
+  }): Promise<number>;
+
+  // --- C5: unscheduled-treatment outreach ------------------------------------------
+  prepareTreatmentOutreach(input: {
+    orgId: number; locationId: number; siteKey: string; batchSize: number; workflowId: string;
+  }): Promise<{ actionId: number; recipients: OutreachRecipient[] } | null>;
+
+  // --- C2: reminders + confirmation write-back --------------------------------------
+  listReminderCandidates(input: {
+    orgId: number; locationId: number; siteKey: string;
+  }): Promise<ReminderRecipient[]>;
+  getReminderPolicy(input: { locationId: number }): Promise<{ autoSend: boolean }>;
+  prepareReminderBatch(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    recipients: ReminderRecipient[];
+  }): Promise<{ actionId: number }>;
+  /** Issues the ConfirmAppointment edge command and waits for the PMS ack. */
+  confirmAppointment(input: {
+    orgId: number; locationId: number; appointmentSourceId: number;
+    patientSourceId: number; workflowId: string;
+  }): Promise<"applied" | "failed">;
+
+  // --- C3: reschedule / slot-offer conversation -------------------------------------
+  findSlotCandidates(input: {
+    orgId: number; locationId: number; patientSourceId: number;
+    appointmentSourceId?: number | null; procedureSourceId?: number | null;
+  }): Promise<ReschedulePlan | null>;
+  /** Breaks the old appointment (if any) and books the chosen slot. */
+  issueRescheduleCommands(input: {
+    orgId: number; locationId: number; workflowId: string; patientSourceId: number;
+    appointmentSourceId: number | null; slot: SlotOffer; procDescript: string;
+  }): Promise<{ bookingCommandId: string }>;
+  finalizeReschedule(input: {
+    orgId: number; locationId: number; workflowId: string; patientSourceId: number;
+    appointmentSourceId: number | null; slot: SlotOffer; outcome: "booked" | "failed";
+  }): Promise<void>;
+
+  // --- C1: morning huddle ------------------------------------------------------------
+  /** Gathers the day's facts, drafts the narrative, and upserts huddle_digests. */
+  generateHuddleDigest(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+  }): Promise<{ date: string; actionCount: number; usedLlm: boolean }>;
 }
