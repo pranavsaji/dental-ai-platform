@@ -19,7 +19,8 @@ export const SyncTable = z.enum([
   "claim",
   "claimproc",
   "recall",
-  "commlog"
+  "commlog",
+  "payment"
 ]);
 export type SyncTable = z.infer<typeof SyncTable>;
 
@@ -59,7 +60,10 @@ export const PatientPayload = z.object({
   state: z.string(),
   zip: z.string(),
   primaryProviderId: z.number(),
-  firstVisit: z.string().nullable()
+  firstVisit: z.string().nullable(),
+  // Mirrors OpenDental TxtMsgOk (0 unknown / 1 yes / 2 no). Unknown counts as
+  // consent for the sim; explicit opt-outs must never be texted (E1 enforces).
+  smsConsent: z.boolean()
 });
 
 export const AppointmentStatus = z.enum(["scheduled", "complete", "unscheduled", "broken", "planned"]);
@@ -93,7 +97,14 @@ export const InsPlanPayload = z.object({
   groupName: z.string(),
   groupNum: z.string(),
   carrierName: z.string(),
-  planType: z.string()
+  planType: z.string(),
+  // Insurance richness (A3): denormalized benefit facts the eligibility and
+  // pre-auth workflows need. The sim seeds them; a real OD install would join
+  // carrier + benefit tables at the edge.
+  carrierPhone: z.string(),
+  payerId: z.string(),
+  annualMax: z.number(),
+  deductible: z.number()
 });
 
 export const PatPlanPayload = z.object({
@@ -113,7 +124,11 @@ export const ClaimPayload = z.object({
   insPayAmt: z.number(),
   planId: z.number(),
   providerId: z.number(),
-  note: z.string()
+  note: z.string(),
+  // Comma-joined CARC codes ("16,97") when the payer denied; "" otherwise.
+  // Denial state is derived from this, not from ClaimStatus (OD has no
+  // 'denied' status letter — a denied claim is Received with zero payment).
+  carcCodes: z.string()
 });
 
 export const ClaimProcPayload = z.object({
@@ -144,6 +159,16 @@ export const CommlogPayload = z.object({
   sentOrReceived: z.number()
 });
 
+// Payments (A4) — the 13th mirrored entity. Splits stay PMS-side; collections
+// metrics only need the payment header.
+export const PaymentPayload = z.object({
+  patientId: z.number(),
+  payDate: z.string().nullable(), // YYYY-MM-DD
+  amount: z.number(),
+  payType: z.number(), // sim: 1 check, 2 card, 3 cash, 4 insurance EFT
+  note: z.string()
+});
+
 export const PAYLOAD_SCHEMAS: Record<SyncTable, z.ZodTypeAny> = {
   provider: ProviderPayload,
   operatory: OperatoryPayload,
@@ -156,7 +181,8 @@ export const PAYLOAD_SCHEMAS: Record<SyncTable, z.ZodTypeAny> = {
   claim: ClaimPayload,
   claimproc: ClaimProcPayload,
   recall: RecallPayload,
-  commlog: CommlogPayload
+  commlog: CommlogPayload,
+  payment: PaymentPayload
 };
 
 export const SyncEvent = z.object({

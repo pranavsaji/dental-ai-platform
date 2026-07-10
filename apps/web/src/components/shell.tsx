@@ -24,9 +24,34 @@ const NAV = [
   { href: "/schedule", label: "Schedule", glyph: "▤" },
   { href: "/patients", label: "Patients", glyph: "◍" },
   { href: "/approvals", label: "Approvals", glyph: "✳" },
+  { href: "/tasks", label: "Tasks", glyph: "☰" },
   { href: "/sms", label: "SMS Console", glyph: "◗" },
   { href: "/audit", label: "Audit Trail", glyph: "≡" }
 ];
+
+// Integration provenance badge (A1): keeps the header honest about whether
+// this location's data is a live PMS, the API, or the embedded mock.
+function IntegrationBadge({ location }: { location: Location }) {
+  const mode = location.integrationMode ?? "unknown";
+  const status = location.integrationStatus ?? "unknown";
+  const beat = location.lastHeartbeatAt ? new Date(location.lastHeartbeatAt).getTime() : 0;
+  const stale = beat > 0 && Date.now() - beat > 60_000;
+  const label =
+    mode === "unknown" || beat === 0 ? "edge offline" :
+    stale ? `${mode} · stale` :
+    status === "degraded" ? `mock · degraded from ${mode === "mock" ? "pms" : mode}` :
+    `live via ${mode}`;
+  const tone =
+    mode === "unknown" || beat === 0 || stale ? "bg-line/70 text-ink-soft" :
+    status === "degraded" ? "bg-amber-soft text-amber" :
+    mode === "mock" ? "bg-amber-soft text-amber" :
+    "bg-mint text-pine";
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${tone}`} title={`PMS integration: ${mode} (${status})`}>
+      {label}
+    </span>
+  );
+}
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -34,6 +59,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationId, setLocationIdState] = useState<number | null>(null);
+  const [openTasks, setOpenTasks] = useState<number>(0);
   const isLogin = pathname === "/login";
 
   useEffect(() => {
@@ -43,13 +69,32 @@ export function Shell({ children }: { children: React.ReactNode }) {
       return;
     }
     setUser(getUser());
-    api<Location[]>("/portal/locations").then((locs) => {
-      setLocations(locs);
-      const stored = Number(window.localStorage.getItem("dental.locationId"));
-      const initial = locs.find((l) => l.id === stored) ?? locs[0];
-      if (initial) setLocationIdState(initial.id);
-    }).catch(() => {});
+    const loadLocations = (first: boolean) =>
+      api<Location[]>("/portal/locations").then((locs) => {
+        setLocations(locs);
+        if (first) {
+          const stored = Number(window.localStorage.getItem("dental.locationId"));
+          const initial = locs.find((l) => l.id === stored) ?? locs[0];
+          if (initial) setLocationIdState(initial.id);
+        }
+      }).catch(() => {});
+    loadLocations(true);
+    // Refresh periodically so the integration badge tracks edge heartbeats.
+    const t = setInterval(() => loadLocations(false), 15_000);
+    return () => clearInterval(t);
   }, [isLogin, router]);
+
+  // Open-task count for the sidebar badge (A5); SSE replaces polling in F1.
+  useEffect(() => {
+    if (isLogin || locationId == null) return;
+    const load = () =>
+      api<{ open: number; inProgress: number; urgent: number }>(`/portal/tasks/summary?locationId=${locationId}`)
+        .then((s) => setOpenTasks(s.open + s.inProgress))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 10_000);
+    return () => clearInterval(t);
+  }, [isLogin, locationId]);
 
   const ctx = useMemo<AppCtx | null>(() => {
     if (!user) return null;
@@ -97,7 +142,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   }`}
                 >
                   <span className="w-4 text-center opacity-80">{n.glyph}</span>
-                  {n.label}
+                  <span className="flex-1">{n.label}</span>
+                  {n.href === "/tasks" && openTasks > 0 && (
+                    <span className="num rounded-full bg-mint-deep/90 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-pine">
+                      {openTasks}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -120,6 +170,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               Lone Star Dental Group
             </div>
             <div className="flex items-center gap-3">
+              <IntegrationBadge location={ctx.location} />
               <span className="text-[11px] uppercase tracking-widest text-ink-faint">Location</span>
               <select
                 className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm shadow-sm outline-none focus:border-teal"

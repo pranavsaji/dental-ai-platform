@@ -40,7 +40,8 @@ export const TABLE_META: Record<SyncTable, { pk: string; stampCol: string }> = {
   claim: { pk: "ClaimNum", stampCol: "DateTStamp" },
   claimproc: { pk: "ClaimProcNum", stampCol: "DateTStamp" },
   recall: { pk: "RecallNum", stampCol: "DateTStamp" },
-  commlog: { pk: "CommlogNum", stampCol: "DateTStamp" }
+  commlog: { pk: "CommlogNum", stampCol: "DateTStamp" },
+  payment: { pk: "PayNum", stampCol: "DateTStamp" }
 };
 
 // Reference tables first so FIFO ingest never sees an appointment before its
@@ -48,7 +49,7 @@ export const TABLE_META: Record<SyncTable, { pk: string; stampCol: string }> = {
 export const SYNC_ORDER: SyncTable[] = [
   "provider", "operatory", "procedurecode", "insplan",
   "patient", "patplan", "appointment", "procedurelog",
-  "claim", "claimproc", "recall", "commlog"
+  "claim", "claimproc", "recall", "commlog", "payment"
 ];
 
 export function transformRow(table: SyncTable, r: Row): unknown {
@@ -74,7 +75,8 @@ export function transformRow(table: SyncTable, r: Row): unknown {
         homePhone: r.HmPhone, wirelessPhone: r.WirelessPhone, email: r.Email,
         address: r.Address, city: r.City, state: r.State, zip: r.Zip,
         primaryProviderId: Number(r.PriProv),
-        firstVisit: dateOrNull(r.SecDateEntry)
+        firstVisit: dateOrNull(r.SecDateEntry),
+        smsConsent: Number(r.TxtMsgOk ?? 0) !== 2 // OD: 0 unknown, 1 yes, 2 no
       };
     case "appointment":
       return {
@@ -97,7 +99,9 @@ export function transformRow(table: SyncTable, r: Row): unknown {
     case "insplan":
       return {
         groupName: r.GroupName, groupNum: r.GroupNum,
-        carrierName: r.CarrierName, planType: r.PlanType
+        carrierName: r.CarrierName, planType: r.PlanType,
+        carrierPhone: r.CarrierPhone ?? "", payerId: r.ElectID ?? "",
+        annualMax: Number(r.AnnualMax ?? 0), deductible: Number(r.Deductible ?? 0)
       };
     case "patplan":
       return {
@@ -111,7 +115,8 @@ export function transformRow(table: SyncTable, r: Row): unknown {
         status: CLAIM_STATUS[r.ClaimStatus] ?? "unsent",
         claimFee: Number(r.ClaimFee), insPayEst: Number(r.InsPayEst),
         insPayAmt: Number(r.InsPayAmt), planId: Number(r.PlanNum),
-        providerId: Number(r.ProvTreat), note: r.ClaimNote ?? ""
+        providerId: Number(r.ProvTreat), note: r.ClaimNote ?? "",
+        carcCodes: r.CarcCodes ?? ""
       };
     case "claimproc":
       return {
@@ -132,6 +137,12 @@ export function transformRow(table: SyncTable, r: Row): unknown {
         patientId: Number(r.PatNum), happenedAt: toIso(r.CommDateTime),
         commType: Number(r.CommType), note: r.Note ?? "",
         mode: Number(r.Mode_), sentOrReceived: Number(r.SentOrReceived)
+      };
+    case "payment":
+      return {
+        patientId: Number(r.PatNum), payDate: dateOrNull(r.PayDate),
+        amount: Number(r.PayAmt), payType: Number(r.PayType),
+        note: r.PayNote ?? ""
       };
   }
 }

@@ -1,15 +1,17 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from "@nestjs/common";
-import { CommandAck, SyncBatch } from "@dental/shared";
+import { CommandAck, EdgeHeartbeat, SyncBatch } from "@dental/shared";
 import { EdgeAuthGuard, type EdgeSite } from "./edge-auth.guard";
 import { IngestService } from "./ingest.service";
 import { CommandsService } from "./commands.service";
+import { HeartbeatService } from "./heartbeat.service";
 
 @Controller("edge")
 @UseGuards(EdgeAuthGuard)
 export class EdgeController {
   constructor(
     private ingest: IngestService,
-    private commands: CommandsService
+    private commands: CommandsService,
+    private heartbeat: HeartbeatService
   ) {}
 
   @Post("sync")
@@ -28,6 +30,13 @@ export class EdgeController {
   async ackCommand(@Req() req: any, @Body() body: unknown) {
     const ack = CommandAck.parse(body);
     await this.commands.ack(req.edgeSite as EdgeSite, ack);
+    return { ok: true };
+  }
+
+  @Post("heartbeat")
+  async heartbeatPost(@Req() req: any, @Body() body: unknown) {
+    const hb = EdgeHeartbeat.parse(body);
+    await this.heartbeat.record(req.edgeSite as EdgeSite, hb);
     return { ok: true };
   }
 }

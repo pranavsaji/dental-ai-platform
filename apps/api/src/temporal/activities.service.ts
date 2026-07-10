@@ -6,6 +6,7 @@ import {
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { CommandsService } from "../edge/commands.service";
+import { TasksService } from "../portal/tasks.service";
 import { SmsService } from "../sms/sms.service";
 import { AgentsClient, type SchedulingCandidate } from "./agents.client";
 import type { ActivitiesInterface, BackfillProposal, ProposeBackfillInput } from "./activities-types";
@@ -21,9 +22,21 @@ export class ActivitiesService implements ActivitiesInterface {
     @Inject(DB) private db: Db,
     private audit: AuditService,
     private commands: CommandsService,
+    private tasks: TasksService,
     private sms: SmsService,
     private agents: AgentsClient
   ) {}
+
+  // --- tasks (A5) ---------------------------------------------------------------
+
+  async createTask(input: {
+    orgId: number; locationId: number; type: string; title: string; body?: string;
+    priority?: "low" | "normal" | "high" | "urgent"; assigneeRole?: string | null;
+    createdBy: string; workflowId?: string | null;
+    resourceType?: string | null; resourceId?: string | null;
+  }): Promise<number> {
+    return this.tasks.create(input);
+  }
 
   async proposeBackfill(input: ProposeBackfillInput): Promise<BackfillProposal | null> {
     const today = new Date().toISOString().slice(0, 10);
@@ -303,6 +316,22 @@ export class ActivitiesService implements ActivitiesInterface {
       type: "claim_escalation",
       summary: `Claim ${input.claimSourceId} needs human attention: ${input.reason}. Recommend calling the carrier.`,
       payload: { claimSourceId: input.claimSourceId, reason: input.reason }
+    });
+    // A5 retrofit: escalations also land in the durable task queue, proving
+    // the pattern Phase B builds on (denials become assignable work, not
+    // just a card that scrolls away).
+    await this.tasks.create({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      type: "claim_denial",
+      title: `Work denied/stalled claim ${input.claimSourceId}`,
+      body: `${input.reason}. Recommend calling the carrier; see the escalation card for context.`,
+      priority: "high",
+      assigneeRole: "staff",
+      createdBy: "agent:billing",
+      workflowId: input.workflowId,
+      resourceType: "claim",
+      resourceId: String(input.claimSourceId)
     });
     await this.audit.log({
       orgId: input.orgId, locationId: input.locationId, actorType: "agent",

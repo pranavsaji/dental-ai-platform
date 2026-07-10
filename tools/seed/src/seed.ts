@@ -11,6 +11,7 @@ import path from "node:path";
 import mysql from "mysql2/promise";
 import { faker } from "@faker-js/faker";
 import * as dotenv from "dotenv";
+import { CARRIER_RULES } from "@dental/shared";
 import { D_CODES, type DCode } from "./dcodes.js";
 import { clinicalNote } from "./notes.js";
 
@@ -25,12 +26,18 @@ interface SiteConfig {
   url: string;
   fakerSeed: number;
   patients: number;
+  // Share of completed production collected within 45 days — differs per site
+  // so cross-location analytics (D1/D2) has a real story to tell.
+  collectRate: number;
 }
 
 const SITES: SiteConfig[] = [
-  { key: "a", url: required("OPENDENTAL_A_URL"), fakerSeed: 101, patients: 300 },
-  { key: "b", url: required("OPENDENTAL_B_URL"), fakerSeed: 202, patients: 260 }
+  { key: "a", url: required("OPENDENTAL_A_URL"), fakerSeed: 101, patients: 300, collectRate: 0.93 },
+  { key: "b", url: required("OPENDENTAL_B_URL"), fakerSeed: 202, patients: 260, collectRate: 0.87 }
 ];
+
+// CARC codes seeded onto denied claims (B4 classifies from exactly these).
+const DENIAL_CARCS = ["16", "96", "97", "197", "45", "119", "50", "22"];
 
 function required(name: string): string {
   const v = process.env[name];
@@ -72,7 +79,7 @@ async function seedSite(site: SiteConfig): Promise<void> {
   console.log(`[site ${site.key}] applying OpenDental schema...`);
   const ddl = readFileSync(path.resolve(__dirname, "../sql/opendental_schema.sql"), "utf8");
   const tables = [
-    "commlog", "recall", "claimproc", "claim", "patplan", "insplan",
+    "paysplit", "payment", "commlog", "recall", "claimproc", "claim", "patplan", "insplan",
     "procedurelog", "appointment", "patient", "procedurecode", "operatory", "provider"
   ];
   await conn.query(tables.map((t) => `DROP TABLE IF EXISTS ${t};`).join("\n"));
@@ -112,11 +119,16 @@ async function seedSite(site: SiteConfig): Promise<void> {
   );
 
   // --- insurance plans ------------------------------------------------------
-  const carriers = ["Delta Dental of Texas", "MetLife", "Cigna Dental", "Aetna", "Guardian",
-    "United Concordia", "Humana Dental", "Principal", "BCBS of Texas", "Sun Life"];
+  // Benefit facts come from the shared CARRIER_RULES table so the mock
+  // clearinghouse (B1) answers from the same data the plans were seeded with.
+  const carriers = CARRIER_RULES.map((c) => c.carrierName);
   await conn.query(
-    "INSERT INTO insplan (PlanNum, GroupName, GroupNum, CarrierName, PlanType) VALUES ?",
-    [carriers.map((c, i) => [i + 1, faker.company.name().slice(0, 45), faker.string.numeric(6), c, "p"])]
+    `INSERT INTO insplan (PlanNum, GroupName, GroupNum, CarrierName, PlanType,
+      CarrierPhone, ElectID, AnnualMax, Deductible) VALUES ?`,
+    [CARRIER_RULES.map((c, i) => [
+      i + 1, faker.company.name().slice(0, 45), faker.string.numeric(6), c.carrierName, "p",
+      c.carrierPhone, c.payerId, c.annualMax, c.deductible
+    ])]
   );
 
   // --- patients --------------------------------------------------------------
@@ -135,19 +147,33 @@ async function seedSite(site: SiteConfig): Promise<void> {
     const planNum = hasIns ? faker.number.int({ min: 1, max: carriers.length }) : 0;
     const priProv = faker.number.int({ min: 1, max: 2 });
     patients.push({ PatNum: i, FName: fname, LName: lname, hasIns, planNum, priProv });
+
+    // Contact richness (A3/E1): ~80% have email, most have a wireless phone,
+    // some only a home line; ~8% have explicitly opted out of texting.
+    const hasEmail = faker.number.float() < 0.8;
+    const hasWireless = faker.number.float() < 0.92;
+    const txtMsgOk = faker.number.float() < 0.08 ? 2 : faker.number.float() < 0.65 ? 1 : 0;
+
+    // New-patient cohort (A3/D1): ~15% joined in the last 120 days, weighted
+    // toward recent weeks so the new-patient trend actually trends.
+    const firstVisit = faker.number.float() < 0.15
+      ? addDays(today, -Math.floor(120 * Math.pow(faker.number.float(), 1.6)) - 1)
+      : faker.date.past({ years: 8, refDate: addDays(today, -121) });
+
     patRows.push([
       i, lname, fname, fmtDate(birth), gender, 0,
-      "", faker.phone.number({ style: "national" }),
-      `${fname.toLowerCase()}.${lname.toLowerCase()}${i}@example.com`,
+      hasWireless && faker.number.float() < 0.6 ? "" : faker.phone.number({ style: "national" }),
+      hasWireless ? faker.phone.number({ style: "national" }) : "",
+      hasEmail ? `${fname.toLowerCase()}.${lname.toLowerCase()}${i}@example.com` : "",
       faker.location.streetAddress(), faker.helpers.arrayElement(TX_CITIES), "TX",
-      faker.location.zipCode("787##"), priProv,
-      fmtDate(faker.date.past({ years: 8, refDate: today }))
+      faker.location.zipCode("787##"), priProv, txtMsgOk,
+      fmtDate(firstVisit)
     ]);
     if (hasIns) patplanRows.push([patplanRows.length + 1, i, planNum, 1, faker.string.numeric(9)]);
   }
   await conn.query(
     `INSERT INTO patient (PatNum, LName, FName, Birthdate, Gender, PatStatus, HmPhone,
-      WirelessPhone, Email, Address, City, State, Zip, PriProv, SecDateEntry) VALUES ?`,
+      WirelessPhone, Email, Address, City, State, Zip, PriProv, TxtMsgOk, SecDateEntry) VALUES ?`,
     [patRows]
   );
   await conn.query(
@@ -162,8 +188,27 @@ async function seedSite(site: SiteConfig): Promise<void> {
   const claimRows: unknown[][] = [];
   const claimProcRows: unknown[][] = [];
   const recallRows: unknown[][] = [];
-  let aptNum = 0, procNum = 0, commNum = 0, claimNum = 0, claimProcNum = 0;
+  const paymentRows: unknown[][] = [];
+  const paysplitRows: unknown[][] = [];
+  let aptNum = 0, procNum = 0, commNum = 0, claimNum = 0, claimProcNum = 0, payNum = 0, splitNum = 0;
   const lastHygieneVisit = new Map<number, Date>();
+  const hadMolarRct = new Set<number>();
+
+  // Records one payment + its splits against a visit's procedures.
+  function recordPayment(
+    patNum: number, amount: number, when: Date, payType: number, note: string,
+    procs: Array<{ procNum: number; fee: number }>
+  ): void {
+    if (amount <= 0) return;
+    payNum++;
+    paymentRows.push([payNum, patNum, fmtDate(when), Math.round(amount * 100) / 100, payType, note]);
+    const totalFee = procs.reduce((s, p) => s + p.fee, 0) || 1;
+    for (const p of procs) {
+      splitNum++;
+      paysplitRows.push([splitNum, payNum, patNum, p.procNum,
+        Math.round((amount * p.fee / totalFee) * 100) / 100, fmtDate(when)]);
+    }
+  }
 
   for (const pat of patients) {
     const visits = faker.number.int({ min: 1, max: 5 });
@@ -196,15 +241,16 @@ async function seedSite(site: SiteConfig): Promise<void> {
       if (isHygiene && faker.number.float() < 0.7) visitCodes.push(codeByProc.get("D0120")!);
       if (isHygiene && faker.number.float() < 0.4) visitCodes.push(codeByProc.get("D0274")!);
       let visitFee = 0;
-      const visitProcNums: number[] = [];
+      const visitProcs: Array<{ procNum: number; fee: number }> = [];
       for (const c of visitCodes) {
         procNum++;
         const tooth = ["D2140", "D2330", "D2391", "D2392", "D2740", "D2750", "D3310", "D3330", "D7140", "D7210"]
           .includes(c.code) ? String(faker.number.int({ min: 2, max: 31 })) : "";
         const fee = Math.round(c.fee * faker.number.float({ min: 0.95, max: 1.1 }));
         visitFee += fee;
-        visitProcNums.push(procNum);
+        visitProcs.push({ procNum, fee });
         procRows.push([procNum, pat.PatNum, aptNum, fmtDate(visitDate), fee, 2, provNum, c.CodeNum, tooth, ""]);
+        if (c.code === "D3330") hadMolarRct.add(pat.PatNum);
         if (c === mainCode) {
           commNum++;
           commRows.push([
@@ -214,21 +260,75 @@ async function seedSite(site: SiteConfig): Promise<void> {
         }
       }
 
-      // claim for insured patients, recent visits
+      // claim + adjudication history (A3): resolved claims carry paid amounts,
+      // ~25% of what would otherwise age gets denied with CARC codes (B4/B5).
+      let insPaid = 0;
       if (pat.hasIns && daysAgo < 180 && faker.number.float() < 0.6) {
         claimNum++;
-        const received = faker.number.float() < 0.55;
         const est = Math.round(visitFee * 0.6);
-        claimRows.push([
-          claimNum, pat.PatNum, fmtDate(visitDate), fmtDate(addDays(visitDate, 2)),
-          received ? "R" : "S", visitFee, est, received ? Math.round(est * faker.number.float({ min: 0.8, max: 1 })) : 0,
-          pat.planNum, provNum, ""
-        ]);
-        for (const pn of visitProcNums) {
-          claimProcNum++;
-          claimProcRows.push([claimProcNum, claimNum, pn, pat.PatNum, pat.planNum,
-            received ? 1 : 0, visitFee, est, received ? est : 0, Math.round(visitFee * 0.15)]);
+        const outcome = faker.number.float();
+        const carrier = carriers[pat.planNum - 1] ?? "the carrier";
+        if (outcome < 0.55) {
+          // paid & resolved
+          insPaid = Math.round(est * faker.number.float({ min: 0.8, max: 1 }));
+          claimRows.push([
+            claimNum, pat.PatNum, fmtDate(visitDate), fmtDate(addDays(visitDate, 2)),
+            "R", visitFee, est, insPaid, pat.planNum, provNum, "", ""
+          ]);
+        } else if (outcome < 0.66) {
+          // denied: received back with zero payment + CARC codes
+          const codes = faker.helpers.arrayElements(DENIAL_CARCS, faker.number.int({ min: 1, max: 2 })).join(",");
+          claimRows.push([
+            claimNum, pat.PatNum, fmtDate(visitDate), fmtDate(addDays(visitDate, 2)),
+            "R", visitFee, est, 0, pat.planNum, provNum,
+            `Denied by ${carrier}; see CARC ${codes}`, codes
+          ]);
+        } else {
+          // still aging
+          claimRows.push([
+            claimNum, pat.PatNum, fmtDate(visitDate), fmtDate(addDays(visitDate, 2)),
+            "S", visitFee, est, 0, pat.planNum, provNum, "", ""
+          ]);
         }
+        const received = outcome < 0.66;
+        for (const p of visitProcs) {
+          claimProcNum++;
+          claimProcRows.push([claimProcNum, claimNum, p.procNum, pat.PatNum, pat.planNum,
+            received ? 1 : 0, visitFee, est, insPaid, Math.round(visitFee * 0.15)]);
+        }
+        if (insPaid > 0) {
+          recordPayment(pat.PatNum, insPaid, addDays(visitDate, faker.number.int({ min: 14, max: 40 })),
+            4, `Insurance EFT — ${carrier}`, visitProcs);
+        }
+      }
+
+      // patient-portion collections (A4): most completed production is paid
+      // within 0–45 days; the per-site rate difference feeds D1's story.
+      const patientPortion = visitFee - insPaid;
+      if (patientPortion > 0 && faker.number.float() < site.collectRate) {
+        recordPayment(pat.PatNum, patientPortion,
+          addDays(visitDate, faker.number.int({ min: 0, max: 45 })),
+          faker.helpers.arrayElement([1, 2, 2, 2, 3]), "Patient payment", visitProcs);
+      }
+    }
+
+    // Planned-but-unscheduled treatment (A3, feeds C5/C1/D1): ~15% of patients
+    // carry treatment-planned procedures with no linked appointment.
+    if (faker.number.float() < 0.15) {
+      const planCount = faker.number.int({ min: 1, max: 2 });
+      for (let k = 0; k < planCount; k++) {
+        const code = hadMolarRct.has(pat.PatNum) && k === 0
+          ? codeByProc.get("D2740")! // crown after molar RCT — the classic dangling plan
+          : codeByProc.get(faker.helpers.arrayElement(
+              ["D2740", "D2750", "D4341", "D4341", "D2391", "D2392", "D7140", "D9944", "D2950"]))!;
+        const fee = Math.max(180, Math.min(1400, Math.round(code.fee * faker.number.float({ min: 0.9, max: 1.1 }))));
+        const plannedDaysAgo = faker.number.int({ min: 21, max: 180 });
+        const tooth = ["D2740", "D2750", "D2391", "D2392", "D7140", "D2950"].includes(code.code)
+          ? String(faker.number.int({ min: 2, max: 31 })) : "";
+        const quadrant = code.code === "D4341" ? faker.helpers.arrayElement(["UR", "UL", "LR", "LL"]) : "";
+        procNum++;
+        procRows.push([procNum, pat.PatNum, 0, fmtDate(addDays(today, -plannedDaysAgo)),
+          fee, 1, pat.priProv, code.CodeNum, tooth, quadrant]);
       }
     }
 
@@ -261,8 +361,10 @@ async function seedSite(site: SiteConfig): Promise<void> {
         const when = new Date(day);
         when.setHours(h, m, 0, 0);
         aptNum++;
+        // ~50% unconfirmed (Confirmed=0) so the reminder sweep (C2) has work;
+        // OD semantics: Confirmed > 1 means a confirmation status is set.
         apptRows.push([
-          aptNum, pat.PatNum, 1, pattern(code.minutes), faker.number.float() < 0.5 ? 21 : 2,
+          aptNum, pat.PatNum, 1, pattern(code.minutes), faker.number.float() < 0.5 ? 21 : 0,
           op.OperatoryNum, op.hygiene ? op.ProvDentist : pat.priProv,
           fmtDateTime(when), "", code.abbr
         ]);
@@ -283,8 +385,29 @@ async function seedSite(site: SiteConfig): Promise<void> {
       pat.priProv, fmtDateTime(when), "Pt called to cancel", "Broken appt"]);
   }
 
+  // No-show history (A3, feeds C4): 3 chronic no-show personas with a visible
+  // pattern, plus scattered one-off no-shows across ~5% of patients.
+  const chronicNoShows = faker.helpers.arrayElements(patients, 3);
+  function seedNoShow(patNum: number, priProv: number): void {
+    const when = addDays(today, -faker.number.int({ min: 10, max: 400 }));
+    if (!isBusinessDay(when)) return;
+    when.setHours(faker.number.int({ min: 8, max: 16 }), faker.helpers.arrayElement([0, 30]), 0, 0);
+    aptNum++;
+    apptRows.push([aptNum, patNum, 5, pattern(40), 0, faker.number.int({ min: 1, max: 6 }),
+      priProv, fmtDateTime(when), "No-show — patient did not arrive", "No-show"]);
+  }
+  for (const pat of chronicNoShows) {
+    const misses = faker.number.int({ min: 3, max: 5 });
+    for (let m = 0; m < misses; m++) seedNoShow(pat.PatNum, pat.priProv);
+  }
+  for (const pat of patients) {
+    if (chronicNoShows.includes(pat)) continue;
+    if (faker.number.float() < 0.05) seedNoShow(pat.PatNum, pat.priProv);
+  }
+
   console.log(`[site ${site.key}] inserting ${patRows.length} patients, ${apptRows.length} appointments, ` +
-    `${procRows.length} procedures, ${claimRows.length} claims, ${commRows.length} notes...`);
+    `${procRows.length} procedures, ${claimRows.length} claims, ${commRows.length} notes, ` +
+    `${paymentRows.length} payments...`);
 
   await conn.query(
     `INSERT INTO appointment (AptNum, PatNum, AptStatus, Pattern, Confirmed, Op, ProvNum,
@@ -298,10 +421,18 @@ async function seedSite(site: SiteConfig): Promise<void> {
   if (claimRows.length) {
     await conn.query(
       `INSERT INTO claim (ClaimNum, PatNum, DateService, DateSent, ClaimStatus, ClaimFee,
-        InsPayEst, InsPayAmt, PlanNum, ProvTreat, ClaimNote) VALUES ?`, [claimRows]);
+        InsPayEst, InsPayAmt, PlanNum, ProvTreat, ClaimNote, CarcCodes) VALUES ?`, [claimRows]);
     await conn.query(
       `INSERT INTO claimproc (ClaimProcNum, ClaimNum, ProcNum, PatNum, PlanNum, Status,
         FeeBilled, InsPayEst, InsPayAmt, WriteOff) VALUES ?`, [claimProcRows]);
+  }
+  if (paymentRows.length) {
+    await conn.query(
+      "INSERT INTO payment (PayNum, PatNum, PayDate, PayAmt, PayType, PayNote) VALUES ?",
+      [paymentRows]);
+    await conn.query(
+      "INSERT INTO paysplit (SplitNum, PayNum, PatNum, ProcNum, SplitAmt, DatePay) VALUES ?",
+      [paysplitRows]);
   }
   await conn.query(
     "INSERT INTO recall (RecallNum, PatNum, DateDue, DateDueCalc, DatePrevious, RecallInterval, RecallStatus) VALUES ?",
@@ -311,7 +442,10 @@ async function seedSite(site: SiteConfig): Promise<void> {
     `SELECT (SELECT COUNT(*) FROM patient) AS patients,
             (SELECT COUNT(*) FROM appointment WHERE AptStatus=1 AND AptDateTime > NOW()) AS upcoming,
             (SELECT COUNT(*) FROM recall WHERE DateDue < CURDATE()) AS overdueRecalls,
-            (SELECT COUNT(*) FROM claim WHERE ClaimStatus='S') AS openClaims`) as any;
+            (SELECT COUNT(*) FROM claim WHERE ClaimStatus='S') AS openClaims,
+            (SELECT COUNT(*) FROM claim WHERE CarcCodes <> '') AS deniedClaims,
+            (SELECT COUNT(*) FROM procedurelog WHERE ProcStatus=1 AND AptNum=0) AS plannedUnscheduled,
+            (SELECT ROUND(SUM(PayAmt)) FROM payment) AS collections`) as any;
   console.log(`[site ${site.key}] done:`, counts);
   await conn.end();
 }

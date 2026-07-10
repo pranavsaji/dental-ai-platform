@@ -22,6 +22,11 @@ export const locations = pgTable("locations", {
   name: text("name").notNull(),
   timezone: text("timezone").notNull().default("America/Chicago"),
   edgeApiKey: text("edge_api_key").notNull(),
+  // Integration provenance (A1): what the edge reports via /edge/heartbeat.
+  // Keeps the dashboard honest about whether data is live PMS or mock.
+  integrationMode: text("integration_mode").notNull().default("unknown"), // api | mysql | mock | unknown
+  integrationStatus: text("integration_status").notNull().default("unknown"), // live | degraded | stale | unknown
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (t) => [uniqueIndex("locations_key_uq").on(t.key)]);
 
@@ -146,7 +151,11 @@ export const insPlans = pgTable("ins_plans", {
   groupName: text("group_name").notNull(),
   groupNum: text("group_num").notNull(),
   carrierName: text("carrier_name").notNull(),
-  planType: text("plan_type").notNull()
+  planType: text("plan_type").notNull(),
+  carrierPhone: text("carrier_phone").notNull().default(""),
+  payerId: text("payer_id").notNull().default(""),
+  annualMax: doublePrecision("annual_max").notNull().default(0),
+  deductible: doublePrecision("deductible").notNull().default(0)
 }, (t) => [uniqueIndex("insplans_loc_src_uq").on(t.locationId, t.sourceId)]);
 
 export const patPlans = pgTable("pat_plans", {
@@ -168,7 +177,10 @@ export const claims = pgTable("claims", {
   insPayAmt: doublePrecision("ins_pay_amt").notNull(),
   planSourceId: bigint("plan_source_id", { mode: "number" }).notNull(),
   providerSourceId: bigint("provider_source_id", { mode: "number" }).notNull(),
-  note: text("note").notNull().default("")
+  note: text("note").notNull().default(""),
+  // Comma-joined CARC codes when denied ("16,97"); "" otherwise. Denial state
+  // derives from this — OD claim statuses have no 'denied' letter.
+  carcCodes: text("carc_codes").notNull().default("")
 }, (t) => [
   uniqueIndex("claims_loc_src_uq").on(t.locationId, t.sourceId),
   index("claims_status_idx").on(t.locationId, t.status)
@@ -209,6 +221,21 @@ export const commLogs = pgTable("comm_logs", {
 }, (t) => [
   uniqueIndex("commlogs_loc_src_uq").on(t.locationId, t.sourceId),
   index("commlogs_pat_idx").on(t.locationId, t.patientSourceId)
+]);
+
+// Payments (A4): the 13th mirrored entity — collections, AR, and
+// production-vs-collections metrics all read from here.
+export const payments = pgTable("payments", {
+  ...tenantCols,
+  patientSourceId: bigint("patient_source_id", { mode: "number" }).notNull(),
+  payDate: date("pay_date"),
+  amount: doublePrecision("amount").notNull(),
+  payType: integer("pay_type").notNull(), // sim: 1 check, 2 card, 3 cash, 4 insurance EFT
+  note: text("note").notNull().default("")
+}, (t) => [
+  uniqueIndex("payments_loc_src_uq").on(t.locationId, t.sourceId),
+  index("payments_date_idx").on(t.locationId, t.payDate),
+  index("payments_pat_idx").on(t.locationId, t.patientSourceId)
 ]);
 
 // --- sync plumbing -----------------------------------------------------------
@@ -284,6 +311,78 @@ export const smsMessages = pgTable("sms_messages", {
   index("sms_loc_pat_idx").on(t.locationId, t.patientSourceId),
   index("sms_provider_sid_idx").on(t.providerSid)
 ]);
+
+// Task management substrate (A5): the durable, assignable work queue every
+// workflow dead-end escalates into. Built once, consumed by B/C/E features.
+export const tasks = pgTable("tasks", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  type: text("type").notNull(), // eligibility_failure | claim_denial | patient_question | huddle_action | preauth_required | manual | ...
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""), // may embed an agent-drafted suggested reply/action
+  priority: text("priority").notNull().default("normal"), // low | normal | high | urgent
+  status: text("status").notNull().default("open"), // open | in_progress | done | dismissed
+  assigneeRole: text("assignee_role"), // admin | provider | staff | null = pool
+  assigneeUserId: bigint("assignee_user_id", { mode: "number" }),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  createdBy: text("created_by").notNull(), // user email | agent:<name> | workflow
+  workflowId: text("workflow_id"),
+  // Deep link into the record the task is about (claim, patient, appointment…)
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedBy: text("resolved_by")
+}, (t) => [
+  index("tasks_loc_status_idx").on(t.locationId, t.status),
+  index("tasks_org_status_idx").on(t.orgId, t.status)
+]);
+
+// Patient contact preferences (A3/E1): mirrored from PMS consent flags at
+// ingest; STOP replies and staff edits update it platform-side. E1's policy
+// engine reads exactly this table before any message leaves the platform.
+export const patientContactPrefs = pgTable("patient_contact_prefs", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  patientSourceId: bigint("patient_source_id", { mode: "number" }).notNull(),
+  smsConsent: boolean("sms_consent").notNull().default(true),
+  emailConsent: boolean("email_consent").notNull().default(true),
+  preferredChannel: text("preferred_channel").notNull().default("sms"), // sms | email | phone
+  timezone: text("timezone").notNull().default("America/Chicago"),
+  consentSource: text("consent_source").notNull().default("pms_mirror"),
+  optOutAt: timestamp("opt_out_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+}, (t) => [uniqueIndex("contactprefs_loc_pat_uq").on(t.locationId, t.patientSourceId)]);
+
+// Daily metrics rollups (D1 computes these nightly; the A3 bootstrap seeds 90
+// days of history so analytics render on day one). Explicit rows, not a
+// matview — testable, incrementally backfillable, history preserved.
+export const dailyLocationMetrics = pgTable("daily_location_metrics", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  date: date("date").notNull(),
+  productionScheduled: doublePrecision("production_scheduled").notNull().default(0),
+  productionCompleted: doublePrecision("production_completed").notNull().default(0),
+  collections: doublePrecision("collections").notNull().default(0),
+  cancellationCount: integer("cancellation_count").notNull().default(0),
+  noshowCount: integer("noshow_count").notNull().default(0),
+  brokenRate: doublePrecision("broken_rate").notNull().default(0),
+  hygieneReappointmentRate: doublePrecision("hygiene_reappointment_rate").notNull().default(0),
+  unscheduledTreatmentValue: doublePrecision("unscheduled_treatment_value").notNull().default(0),
+  ar0_30: doublePrecision("ar_0_30").notNull().default(0),
+  ar31_60: doublePrecision("ar_31_60").notNull().default(0),
+  ar61_90: doublePrecision("ar_61_90").notNull().default(0),
+  ar90Plus: doublePrecision("ar_90_plus").notNull().default(0),
+  openClaimsValue: doublePrecision("open_claims_value").notNull().default(0),
+  denialCount: integer("denial_count").notNull().default(0),
+  newPatients: integer("new_patients").notNull().default(0),
+  caseAcceptanceRate: doublePrecision("case_acceptance_rate").notNull().default(0),
+  appointmentsCount: integer("appointments_count").notNull().default(0),
+  chairUtilization: doublePrecision("chair_utilization").notNull().default(0)
+}, (t) => [uniqueIndex("dlm_loc_date_uq").on(t.locationId, t.date)]);
 
 // Clinical note embeddings for pgvector RAG (bge-small-en-v1.5 = 384 dims,
 // generated locally by the agents service — no external embedding API).

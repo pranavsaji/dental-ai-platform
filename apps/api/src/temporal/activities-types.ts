@@ -52,4 +52,12 @@ export interface ActivitiesInterface {
   prepareRecallCampaign(input: {
     orgId: number; locationId: number; siteKey: string; batchSize: number; workflowId: string;
   }): Promise<{ actionId: number; recipients: Array<{ patientSourceId: number; message: string }> } | null>;
+  // Task substrate (A5): the durable, assignable escalation path every
+  // workflow can use instead of (or in addition to) a proposed-action card.
+  createTask(input: {
+    orgId: number; locationId: number; type: string; title: string; body?: string;
+    priority?: "low" | "normal" | "high" | "urgent"; assigneeRole?: string | null;
+    createdBy: string; workflowId?: string | null;
+    resourceType?: string | null; resourceId?: string | null;
+  }): Promise<number>;
 }

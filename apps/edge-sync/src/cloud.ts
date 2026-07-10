@@ -1,4 +1,4 @@
-import type { CommandAck, EdgeCommand, SyncBatch, SyncBatchAck } from "@dental/shared";
+import type { CommandAck, EdgeCommand, EdgeHeartbeat, SyncBatch, SyncBatchAck } from "@dental/shared";
 import { config } from "./config.js";
 
 // Thin HTTP client for the cloud control plane. All calls authenticate with
@@ -30,4 +30,8 @@ export function fetchCommands(): Promise<EdgeCommand[]> {
 
 export function ackCommand(ack: CommandAck): Promise<{ ok: boolean }> {
   return call<{ ok: boolean }>("/edge/commands/ack", { method: "POST", body: JSON.stringify(ack) });
+}
+
+export function postHeartbeat(hb: EdgeHeartbeat): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("/edge/heartbeat", { method: "POST", body: JSON.stringify(hb) });
 }

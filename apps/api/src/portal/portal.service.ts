@@ -30,7 +30,17 @@ export class PortalService {
   }
 
   async listLocations(user: SessionUser) {
-    const rows = await this.db.select().from(locations).where(eq(locations.orgId, user.orgId));
+    // Explicit columns: integration provenance for the header badge (A1),
+    // and never ship edgeApiKey to the browser.
+    const rows = await this.db.select({
+      id: locations.id,
+      key: locations.key,
+      name: locations.name,
+      timezone: locations.timezone,
+      integrationMode: locations.integrationMode,
+      integrationStatus: locations.integrationStatus,
+      lastHeartbeatAt: locations.lastHeartbeatAt
+    }).from(locations).where(eq(locations.orgId, user.orgId));
     return user.locationId != null ? rows.filter((l) => l.id === user.locationId) : rows;
   }
 

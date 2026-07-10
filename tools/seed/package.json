@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dental/shared": "workspace:*",
     "@faker-js/faker": "^9.6.0",
     "dotenv": "^16.4.5",
     "mysql2": "^3.11.0"

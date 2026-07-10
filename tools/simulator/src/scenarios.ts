@@ -1,0 +1,83 @@
+// Named, replayable event sequences — the demo scripts and E2E fixtures.
+// `pnpm simulate <name>` primes exactly the state a demo needs.
+
+import type { Rng } from "./rng.js";
+import type { PracticeOps } from "./ops.js";
+import { booking, cancellation, demographicEdit, payment, walkIn } from "./generators.js";
+
+export interface Scenario {
+  name: string;
+  description: string;
+  run(rng: Rng, ops: PracticeOps): Promise<string[]>;
+}
+
+async function collect(log: string[], result: string | null): Promise<void> {
+  if (result) log.push(result);
+}
+
+export const SCENARIOS: Record<string, Scenario> = {
+  "flagship-loop": {
+    name: "flagship-loop",
+    description: "Cancel one appointment tomorrow — primes the cancellation → approval → SMS → booking loop.",
+    async run(rng, ops) {
+      const log: string[] = [];
+      await collect(log, await cancellation(rng, ops));
+      if (log.length === 0) log.push("no future appointments to cancel — book some first (busy-morning)");
+      return log;
+    }
+  },
+
+  "busy-morning": {
+    name: "busy-morning",
+    description: "A realistic morning burst: bookings, cancellations, walk-ins, an address change, payments.",
+    async run(rng, ops) {
+      const log: string[] = [];
+      for (let i = 0; i < 3; i++) await collect(log, await booking(rng, ops));
+      for (let i = 0; i < 2; i++) await collect(log, await cancellation(rng, ops));
+      for (let i = 0; i < 2; i++) await collect(log, await walkIn(rng, ops));
+      await collect(log, await demographicEdit(rng, ops));
+      for (let i = 0; i < 2; i++) await collect(log, await payment(rng, ops));
+      return log;
+    }
+  },
+
+  "denial-storm": {
+    name: "denial-storm",
+    description: "Six aging claims come back denied across CARC categories — primes the denial worklist (B4/B5).",
+    async run(rng, ops) {
+      const log: string[] = [];
+      // One representative code per denial category (see CARC_CODES in @dental/shared).
+      const carcs = ["16", "96", "97", "197", "45", "50"];
+      const claims = await ops.agingClaims(carcs.length);
+      if (claims.length === 0) {
+        log.push("no aging claims to deny — run the seed or busy-morning first");
+        return log;
+      }
+      for (let i = 0; i < claims.length; i++) {
+        const carc = carcs[i % carcs.length];
+        await ops.denyClaim(claims[i].claimNum, carc, `Denied by payer; see CARC ${carc}`);
+        log.push(`denied claim ${claims[i].claimNum} ($${claims[i].fee}) with CARC ${carc}`);
+      }
+      return log;
+    }
+  },
+
+  "no-show-week": {
+    name: "no-show-week",
+    description: "Several patients silently miss appointments — primes no-show risk scoring (C4).",
+    async run(rng, ops) {
+      const log: string[] = [];
+      const recent = await ops.listScheduled(-7, 1);
+      const victims = recent.slice(0, 5);
+      if (victims.length === 0) {
+        log.push("no recent scheduled appointments to no-show");
+        return log;
+      }
+      for (const a of victims) {
+        await ops.breakAppointment(a.aptNum, "No-show — patient did not arrive");
+        log.push(`no-show: appointment ${a.aptNum} (patient ${a.patNum}) at ${a.startsAt}`);
+      }
+      return log;
+    }
+  }
+};

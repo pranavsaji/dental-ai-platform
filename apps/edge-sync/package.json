@@ -13,11 +13,13 @@
   },
   "dependencies": {
     "@dental/shared": "workspace:*",
+    "@dental/simulator": "workspace:*",
     "dotenv": "^16.4.5",
     "mysql2": "^3.11.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@dental/mock-od-api": "workspace:*",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"

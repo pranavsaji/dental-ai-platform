@@ -1,74 +1,103 @@
 // Dental AI Platform Edge Synchronizer — runs "on-prem" beside OpenDental.
 //
-// Three loops on one interval:
-//   1. capture  — poll each table's DateTStamp past the saved cursor,
-//                 transform rows to canonical events, append to the outbox
+// Three loops on one interval, all speaking to the PMS through a pluggable
+// adapter (PMS_MODE = api | mysql | mock):
+//   1. capture  — pull each table's changes past the saved cursor via the
+//                 adapter, append canonical events to the outbox
 //   2. drain    — push outbox batches to the cloud; only advance on ack
-//   3. commands — pull pending cloud commands, apply to OpenDental, ack
+//   3. commands — pull pending cloud commands, apply via the adapter, ack
 //
 // Delivery is at-least-once; eventIds are deterministic so the cloud dedupes.
-// The one-second cursor overlap (TIMESTAMP resolution) is intentional.
+// If the configured adapter fails health checks repeatedly and
+// PMS_FALLBACK=mock is set, the edge hot-swaps to the embedded practice
+// simulator so demos never die — and reports the degradation honestly via
+// /edge/heartbeat.
 
-import mysql from "mysql2/promise";
+import http from "node:http";
 import { SyncTable, type SyncEvent } from "@dental/shared";
 import { config } from "./config.js";
 import { StateStore } from "./state.js";
-import { SYNC_ORDER, TABLE_META, transformRow } from "./transform.js";
-import { pushBatch, fetchCommands, ackCommand } from "./cloud.js";
-import { applyCommand } from "./writeback.js";
+import { SYNC_ORDER } from "./transform.js";
+import { pushBatch, fetchCommands, ackCommand, postHeartbeat } from "./cloud.js";
+import { createAdapter, type PmsAdapter } from "./adapters/index.js";
 
 const log = (msg: string) => console.log(`[edge:${config.siteKey}] ${msg}`);
 
-const u = new URL(config.mysqlUrl);
-const pool = mysql.createPool({
-  host: u.hostname,
-  port: Number(u.port || 3306),
-  user: decodeURIComponent(u.username),
-  password: decodeURIComponent(u.password),
-  database: u.pathname.slice(1),
-  dateStrings: true, // temporal columns as strings; avoids TZ reinterpretation
-  connectionLimit: 4
-});
-
 const state = new StateStore(config.stateFile);
 
-async function captureTable(table: SyncTable): Promise<number> {
-  const meta = TABLE_META[table];
-  const cursor = state.cursor(table);
-  // Keyset pagination on (stamp, pk): advances through bulk changes that share
-  // one TIMESTAMP second instead of refetching them forever.
-  const [rows] = await pool.query<any[]>(
-    `SELECT * FROM ${table}
-     WHERE (${meta.stampCol} > ?) OR (${meta.stampCol} = ? AND ${meta.pk} > ?)
-     ORDER BY ${meta.stampCol} ASC, ${meta.pk} ASC LIMIT ?`,
-    [cursor.stamp, cursor.stamp, cursor.pk, config.batchSize]
-  );
-  if (rows.length === 0) return 0;
+const adapterConfig = {
+  mysqlUrl: config.mysqlUrl,
+  odApiUrl: config.odApiUrl,
+  odApiDeveloperKey: config.odApiDeveloperKey,
+  odApiCustomerKey: config.odApiCustomerKey,
+  mockSeed: config.mockSeed,
+  mockTickMs: config.mockTickMs,
+  onMockEvent: (desc: string) => log(`sim: ${desc}`)
+};
 
-  const events: SyncEvent[] = rows.map((r) => {
-    const stamp: string = r[meta.stampCol];
-    return {
-      eventId: `${config.siteKey}:${table}:${r[meta.pk]}:${stamp}`,
-      table,
-      sourceId: Number(r[meta.pk]),
-      stamp: stamp.replace(" ", "T"),
-      payload: transformRow(table, r)
-    };
-  });
-  state.enqueue(events);
-  const last = rows[rows.length - 1];
-  state.setCursor(table, { stamp: last[meta.stampCol], pk: Number(last[meta.pk]) });
-  return events.length;
+let adapter: PmsAdapter;
+let degradedDetail = ""; // non-empty once fallback engaged
+try {
+  adapter = createAdapter(config.pmsMode, adapterConfig);
+} catch (err) {
+  if (config.pmsFallback === "mock" && config.pmsMode !== "mock") {
+    degradedDetail = `adapter construction failed: ${(err as Error).message}`;
+    log(`!!! ${degradedDetail} — falling back to mock adapter`);
+    adapter = createAdapter("mock", adapterConfig);
+  } else {
+    throw err;
+  }
+}
+
+let healthFailures = 0;
+async function checkHealthAndMaybeFallback(): Promise<void> {
+  const h = await adapter.health().catch((err) => ({ ok: false, detail: (err as Error).message }));
+  if (h.ok) {
+    healthFailures = 0;
+    return;
+  }
+  healthFailures++;
+  log(`adapter health check failed (${healthFailures}/${config.healthFailureLimit}): ${h.detail}`);
+  if (
+    healthFailures >= config.healthFailureLimit &&
+    config.pmsFallback === "mock" &&
+    adapter.mode !== "mock"
+  ) {
+    degradedDetail = `${adapter.mode} adapter unhealthy: ${h.detail}`;
+    log(`!!! ${degradedDetail} — hot-swapping to mock adapter so workflows keep running`);
+    await adapter.close().catch(() => {});
+    adapter = createAdapter("mock", adapterConfig);
+    healthFailures = 0;
+  }
+}
+
+// Cursor state is namespaced per adapter so a later recovery doesn't corrupt
+// the original adapter's cursors. The mysql namespace keeps the legacy
+// un-prefixed keys for backward compatibility with existing state files.
+function cursorKey(table: SyncTable): string {
+  return adapter.mode === "mysql" ? table : `${adapter.mode}:${table}`;
 }
 
 async function captureAll(): Promise<void> {
   let total = 0;
   for (const table of SYNC_ORDER) {
-    total += await captureTable(table);
+    const key = cursorKey(table);
+    const { rows, next } = await adapter.capture(table, state.cursor(key), config.batchSize);
+    if (rows.length === 0) continue;
+    const events: SyncEvent[] = rows.map((r) => ({
+      eventId: `${config.siteKey}:${table}:${r.sourceId}:${r.stamp}`,
+      table,
+      sourceId: r.sourceId,
+      stamp: r.stamp.replace(" ", "T"),
+      payload: r.payload
+    }));
+    state.enqueue(events);
+    if (next) state.setCursor(key, next);
+    total += events.length;
   }
   if (total > 0) {
     state.save();
-    log(`captured ${total} changed rows -> outbox (${state.get().outbox.length} pending)`);
+    log(`captured ${total} changed rows via ${adapter.mode} -> outbox (${state.get().outbox.length} pending)`);
   }
 }
 
@@ -110,40 +139,77 @@ async function processCommands(): Promise<void> {
         .catch(() => {});
       continue;
     }
-    const conn = await pool.getConnection();
     try {
-      const resultId = await applyCommand(conn, cmd.payload);
+      const { sourceId } = await adapter.apply(cmd.payload);
       state.markCommandApplied(cmd.commandId);
       state.save();
-      await ackCommand({ commandId: cmd.commandId, status: "applied", resultSourceId: resultId, error: null });
-      log(`applied command ${cmd.payload.type} (${cmd.commandId}) -> source id ${resultId}`);
+      await ackCommand({ commandId: cmd.commandId, status: "applied", resultSourceId: sourceId, error: null });
+      log(`applied command ${cmd.payload.type} (${cmd.commandId}) via ${adapter.mode} -> source id ${sourceId}`);
     } catch (err) {
       await ackCommand({
         commandId: cmd.commandId, status: "failed",
         resultSourceId: null, error: (err as Error).message
       }).catch(() => {});
       log(`command ${cmd.commandId} failed: ${(err as Error).message}`);
-    } finally {
-      conn.release();
     }
   }
 }
 
+async function sendHeartbeat(): Promise<void> {
+  await postHeartbeat({
+    configuredMode: config.pmsMode,
+    activeMode: adapter.mode,
+    status: degradedDetail ? "degraded" : "live",
+    detail: degradedDetail,
+    at: new Date().toISOString()
+  }).catch(() => {}); // heartbeat is best-effort; next tick retries
+}
+
 let running = false;
+let pokeRequested = false;
 async function tick(): Promise<void> {
-  if (running) return; // never overlap ticks
+  if (running) {
+    pokeRequested = true; // webhook hint arrived mid-tick; run again right after
+    return;
+  }
   running = true;
   try {
+    await checkHealthAndMaybeFallback();
     await captureAll();
     await drainOutbox();
     await processCommands();
+    await sendHeartbeat();
   } catch (err) {
+    healthFailures++;
     log(`tick error: ${(err as Error).message}`);
   } finally {
     running = false;
+    if (pokeRequested) {
+      pokeRequested = false;
+      setImmediate(() => void tick());
+    }
   }
 }
 
-log(`starting against ${u.hostname}:${u.port} -> ${config.cloudUrl} (poll ${config.pollMs}ms)`);
+// OD API Events (api mode): a tiny listener that treats every webhook as a
+// hint to poll immediately. The event payload is never trusted — capture()
+// against the API remains the source of truth.
+if (config.pmsMode === "api" && config.webhookPort > 0) {
+  http.createServer((req, res) => {
+    if (req.method === "POST") {
+      req.resume(); // drain body; contents intentionally ignored
+      req.on("end", () => {
+        res.writeHead(204).end();
+        log("webhook hint received -> capturing now");
+        void tick();
+      });
+    } else {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+    }
+  }).listen(config.webhookPort, () => log(`webhook hint listener on :${config.webhookPort}`));
+}
+
+log(`starting in PMS_MODE=${config.pmsMode} (active: ${adapter.mode}) -> ${config.cloudUrl} (poll ${config.pollMs}ms)` +
+  (config.pmsFallback ? " [fallback: mock]" : ""));
 await tick();
 setInterval(tick, config.pollMs);

@@ -16,6 +16,10 @@ export interface Location {
   id: number;
   key: string;
   name: string;
+  // Integration provenance (A1): what the edge last reported via heartbeat.
+  integrationMode?: string; // api | mysql | mock | unknown
+  integrationStatus?: string; // live | degraded | unknown
+  lastHeartbeatAt?: string | null;
 }
 
 export function getToken(): string | null {

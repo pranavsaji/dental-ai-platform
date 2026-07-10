@@ -1,8 +1,10 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import {
   appointments, claimProcs, claims, commLogs, insPlans, operatories,
-  patPlans, patients, procedureCodes, procedures, providers, recalls, syncEvents
+  patPlans, patientContactPrefs, patients, payments, procedureCodes,
+  procedures, providers, recalls, syncEvents
 } from "@dental/db";
 import * as shared from "@dental/shared";
 import { DB, type Db } from "../db";
@@ -100,6 +102,25 @@ export class IngestService {
         const { orgId, locationId, sourceId, ...set } = values;
         await this.db.insert(patients).values(values)
           .onConflictDoUpdate({ target: [patients.locationId, patients.sourceId], set });
+        // Contact-prefs mirror (A3/E1): PMS consent flows in at ingest, but a
+        // platform-side opt-out (STOP reply) is sticky — a re-sync never
+        // reinstates consent once optOutAt is set.
+        await this.db.insert(patientContactPrefs).values({
+          orgId: site.orgId,
+          locationId: site.locationId,
+          patientSourceId: event.sourceId,
+          smsConsent: p.smsConsent,
+          emailConsent: p.email !== "",
+          preferredChannel: p.smsConsent && p.wirelessPhone !== "" ? "sms" : p.email !== "" ? "email" : "phone",
+          updatedAt: new Date()
+        }).onConflictDoUpdate({
+          target: [patientContactPrefs.locationId, patientContactPrefs.patientSourceId],
+          set: {
+            smsConsent: sql`case when ${patientContactPrefs.optOutAt} is null then ${p.smsConsent} else false end`,
+            emailConsent: p.email !== "",
+            updatedAt: new Date()
+          }
+        });
         break;
       }
       case "appointment": {
@@ -135,7 +156,11 @@ export class IngestService {
         break;
       }
       case "insplan": {
-        const values = { ...base, groupName: p.groupName, groupNum: p.groupNum, carrierName: p.carrierName, planType: p.planType };
+        const values = {
+          ...base, groupName: p.groupName, groupNum: p.groupNum, carrierName: p.carrierName,
+          planType: p.planType, carrierPhone: p.carrierPhone, payerId: p.payerId,
+          annualMax: p.annualMax, deductible: p.deductible
+        };
         const { orgId, locationId, sourceId, ...set } = values;
         await this.db.insert(insPlans).values(values)
           .onConflictDoUpdate({ target: [insPlans.locationId, insPlans.sourceId], set });
@@ -153,7 +178,8 @@ export class IngestService {
           ...base,
           patientSourceId: p.patientId, dateService: p.dateService, dateSent: p.dateSent,
           status: p.status, claimFee: p.claimFee, insPayEst: p.insPayEst, insPayAmt: p.insPayAmt,
-          planSourceId: p.planId, providerSourceId: p.providerId, note: p.note
+          planSourceId: p.planId, providerSourceId: p.providerId, note: p.note,
+          carcCodes: p.carcCodes
         };
         const { orgId, locationId, sourceId, ...set } = values;
         await this.db.insert(claims).values(values)
@@ -188,6 +214,17 @@ export class IngestService {
         const { orgId, locationId, sourceId, ...set } = values;
         await this.db.insert(commLogs).values(values)
           .onConflictDoUpdate({ target: [commLogs.locationId, commLogs.sourceId], set });
+        break;
+      }
+      case "payment": {
+        const values = {
+          ...base,
+          patientSourceId: p.patientId, payDate: p.payDate,
+          amount: p.amount, payType: p.payType, note: p.note
+        };
+        const { orgId, locationId, sourceId, ...set } = values;
+        await this.db.insert(payments).values(values)
+          .onConflictDoUpdate({ target: [payments.locationId, payments.sourceId], set });
         break;
       }
     }
