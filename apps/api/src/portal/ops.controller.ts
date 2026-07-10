@@ -68,7 +68,9 @@ export class OpsController {
     return { workflowId };
   }
 
-  // C1: read the digest for a date (default today).
+  // C1: read the digest for a date (default today). Wrapped because a bare
+  // null serializes to an empty body, which JSON clients can't distinguish
+  // from a failed request.
   @Get("huddle")
   async getHuddle(
     @CurrentUser() user: SessionUser,
@@ -76,7 +78,7 @@ export class OpsController {
     @Query("date") date?: string
   ) {
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
-    return this.portal.huddleDigest(loc.id, date);
+    return { digest: await this.portal.huddleDigest(loc.id, date) };
   }
 
   // C2: manual reminder sweep (the cron fires at 16:00 for T+1).

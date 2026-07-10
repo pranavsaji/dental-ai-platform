@@ -27,14 +27,31 @@ interface Previsit {
   usedLlm: boolean;
 }
 
+// B2: freshest eligibility verdict for the insurance card.
+interface EligCheck {
+  patientSourceId: number;
+  status: string; // verified | attention | inactive | failed
+  summary: string;
+  checkedAt: string;
+}
+
+function daysAgo(iso: string): string {
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  return d === 0 ? "today" : d === 1 ? "1d ago" : `${d}d ago`;
+}
+
 export default function PatientPage({ params }: { params: Promise<{ locationId: string; sourceId: string }> }) {
   const { locationId, sourceId } = use(params);
   const [data, setData] = useState<Timeline | null>(null);
   const [previsit, setPrevisit] = useState<Previsit | null>(null);
   const [previsitBusy, setPrevisitBusy] = useState(false);
+  const [elig, setElig] = useState<EligCheck | null>(null);
 
   useEffect(() => {
     api<Timeline>(`/portal/patients/${locationId}/${sourceId}`).then(setData).catch(() => {});
+    api<EligCheck[]>(`/portal/billing/eligibility?locationId=${locationId}&patients=${sourceId}`)
+      .then((rows) => setElig(rows[0] ?? null))
+      .catch(() => {});
   }, [locationId, sourceId]);
 
   async function generatePrevisit() {
@@ -183,6 +200,28 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
                   <span className="ml-2 text-xs text-ink-faint">subscriber <span className="num">{i.subscriberId}</span></span>
                 </div>
               ))
+            )}
+            {/* B2: freshest eligibility verdict (same source as the /schedule dot). */}
+            {data.insurance.length > 0 && (
+              <div className="flex items-start gap-2 border-t border-line/50 pt-3">
+                <span className={`mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                  !elig ? "bg-line" :
+                  elig.status === "verified" ? "bg-teal" :
+                  elig.status === "attention" ? "bg-amber" :
+                  "bg-coral"
+                }`} />
+                {elig ? (
+                  <div>
+                    <span className="font-medium capitalize">{elig.status}</span>
+                    <span className="ml-2 text-xs text-ink-faint">checked {daysAgo(elig.checkedAt)}</span>
+                    <p className="mt-0.5 text-xs leading-relaxed text-ink-soft">{elig.summary}</p>
+                  </div>
+                ) : (
+                  <span className="text-xs text-ink-faint">
+                    Insurance not verified yet — run an eligibility sweep from Billing.
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </Card>

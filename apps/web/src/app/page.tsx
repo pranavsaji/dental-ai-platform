@@ -37,13 +37,26 @@ interface ScheduleResp {
   }>;
 }
 
+function localDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export default function OverviewPage() {
   const { location } = useApp();
   const [ov, setOv] = useState<Overview | null>(null);
   const [sched, setSched] = useState<ScheduleResp | null>(null);
   const [huddle, setHuddle] = useState<Huddle | null>(null);
+  const [huddleDate, setHuddleDate] = useState(() => localDateStr(new Date()));
   const [opsMsg, setOpsMsg] = useState("");
   const [taskMsg, setTaskMsg] = useState("");
+  const today = localDateStr(new Date());
+
+  function shiftHuddleDate(delta: number) {
+    const d = new Date(`${huddleDate}T12:00:00`);
+    d.setDate(d.getDate() + delta);
+    setHuddle(null); // don't show one day's digest under another day's header
+    setHuddleDate(localDateStr(d));
+  }
 
   async function runOps(path: string, label: string) {
     if (!location) return;
@@ -79,7 +92,9 @@ export default function OverviewPage() {
   useEffect(() => {
     if (!location) return;
     const loadHuddle = () =>
-      api<Huddle | null>(`/portal/ops/huddle?locationId=${location.id}`).then(setHuddle).catch(() => {});
+      api<{ digest: Huddle | null }>(`/portal/ops/huddle?locationId=${location.id}&date=${huddleDate}`)
+        .then((r) => setHuddle(r.digest))
+        .catch(() => {});
     api<Overview>(`/portal/overview?locationId=${location.id}`).then(setOv).catch(() => {});
     api<ScheduleResp>(`/portal/schedule?locationId=${location.id}`).then(setSched).catch(() => {});
     loadHuddle();
@@ -88,7 +103,7 @@ export default function OverviewPage() {
       loadHuddle();
     }, 15000);
     return () => clearInterval(t);
-  }, [location]);
+  }, [location, huddleDate]);
 
   return (
     <div>
@@ -96,7 +111,7 @@ export default function OverviewPage() {
 
       {/* C1: morning huddle digest */}
       <Card
-        title={huddle ? `Morning huddle — ${huddle.date}` : "Morning huddle"}
+        title={`Morning huddle — ${huddleDate}`}
         className="rise mb-6"
         action={
           <div className="flex items-center gap-2">
@@ -105,17 +120,42 @@ export default function OverviewPage() {
                 {huddle.usedLlm ? "agent narrative" : "template narrative"}
               </span>
             )}
+            {/* Digest history: one row per (location, day) — page by date. */}
             <button
-              onClick={() => runOps("huddle", "Morning huddle")}
-              className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2"
+              onClick={() => shiftHuddleDate(-1)}
+              className="rounded-md border border-line bg-surface px-2 py-1 text-xs hover:border-teal"
+              title="Previous day's digest"
             >
-              ✳ {huddle ? "Refresh digest" : "Generate digest"}
+              ←
             </button>
+            <button
+              onClick={() => shiftHuddleDate(1)}
+              disabled={huddleDate >= today}
+              className="rounded-md border border-line bg-surface px-2 py-1 text-xs hover:border-teal disabled:opacity-40"
+              title="Next day's digest"
+            >
+              →
+            </button>
+            {huddleDate !== today && (
+              <button onClick={() => setHuddleDate(today)} className="text-xs font-medium text-teal hover:underline">
+                Today
+              </button>
+            )}
+            {huddleDate === today && (
+              <button
+                onClick={() => runOps("huddle", "Morning huddle")}
+                className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2"
+              >
+                ✳ {huddle ? "Refresh digest" : "Generate digest"}
+              </button>
+            )}
           </div>
         }
       >
         {!huddle ? (
-          <Empty text="No digest yet today. The cron runs at 6:00 — or generate one now." />
+          <Empty text={huddleDate === today
+            ? "No digest yet today. The cron runs at 6:00 — or generate one now."
+            : `No digest was generated on ${huddleDate}.`} />
         ) : (
           <div className="px-5 py-4">
             <p className="max-w-3xl text-sm leading-relaxed text-ink">{huddle.narrative}</p>

@@ -1343,6 +1343,7 @@ export class ActivitiesService implements ActivitiesInterface {
         patientSourceId: appointments.patientSourceId,
         startsAt: appointments.startsAt,
         procDescript: appointments.procDescript,
+        noShowRisk: appointments.noShowRisk,
         firstName: patients.firstName,
         lastName: patients.lastName,
         smsConsent: patientContactPrefs.smsConsent
@@ -1362,7 +1363,9 @@ export class ActivitiesService implements ActivitiesInterface {
         lte(appointments.startsAt, dayEnd),
         sql`${patients.wirelessPhone} <> ''`
       ))
-      .orderBy(appointments.startsAt)
+      // C4 consumption: highest no-show risk gets reminded first, so the
+      // riskiest patients have the longest window to confirm or reschedule.
+      .orderBy(desc(appointments.noShowRisk), appointments.startsAt)
       .limit(50);
     const consented = rows.filter((r) => r.smsConsent !== false);
     if (consented.length === 0) return [];
