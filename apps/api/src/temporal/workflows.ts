@@ -87,13 +87,17 @@ export async function cancellationBackfill(input: BackfillInput): Promise<string
   // a stale "YES" from an earlier candidate can't claim the current offer.
   for (const candidate of proposal.candidates) {
     smsReply.value = null;
-    await acts.sendOutreachSms({
+    // E1: the policy gate may refuse this candidate (opt-out, caps) — cascade
+    // straight to the next one instead of waiting 4h on a dead offer.
+    const offer = await acts.sendOutreachSms({
       orgId: input.orgId,
       locationId: input.locationId,
       patientSourceId: candidate.patientSourceId,
       body: candidate.message,
-      workflowId: wfId
+      workflowId: wfId,
+      kind: "outreach"
     });
+    if (offer === "blocked") continue;
     const replied = await condition(() => {
       const r = readReply(smsReply);
       return r !== null && (r.patientSourceId ?? candidate.patientSourceId) === candidate.patientSourceId;
@@ -107,7 +111,8 @@ export async function cancellationBackfill(input: BackfillInput): Promise<string
         locationId: input.locationId,
         patientSourceId: candidate.patientSourceId,
         body: "No problem — we'll keep you on the list and reach out next time. Reply STOP to opt out.",
-        workflowId: wfId
+        workflowId: wfId,
+        kind: "conversation"
       });
       continue;
     }
@@ -445,20 +450,23 @@ export async function recallCampaign(input: RecallCampaignInput): Promise<string
   }
   await acts.setActionStatus(plan.actionId, "approved", approval.value!.decidedBy);
 
-  let sent = 0;
+  // E3: channel-aware delivery — patients who prefer email get the recall
+  // letter template; everyone else gets the SMS. E1 policy applies to both.
+  let sent = 0, blocked = 0;
   for (const r of plan.recipients) {
-    await acts.sendOutreachSms({
+    const outcome = await acts.sendRecallMessage({
       orgId: input.orgId,
       locationId: input.locationId,
-      patientSourceId: r.patientSourceId,
-      body: r.message,
-      workflowId: wfId
+      siteKey: input.siteKey,
+      workflowId: wfId,
+      recipient: r
     });
-    sent++;
-    await sleep("2 seconds"); // rate limit between texts
+    if (outcome === "blocked") blocked++;
+    else sent++;
+    await sleep("2 seconds"); // rate limit between sends
   }
   await acts.setActionStatus(plan.actionId, "executed", null);
-  return `sent-${sent}`;
+  return blocked > 0 ? `sent-${sent}-blocked-${blocked}` : `sent-${sent}`;
 }
 
 // --- C3: reschedule / slot-offer conversation --------------------------------------
@@ -505,7 +513,8 @@ export async function rescheduleConversation(input: RescheduleInput): Promise<st
     body:
       `Hi ${plan.patientName.split(" ")[0]}, here are our next openings for your ` +
       `${plan.procDescript}: ${menu}. Reply ${choiceText} to book.`,
-    workflowId: wfId
+    workflowId: wfId,
+    kind: "conversation" // the patient asked — replies are exempt from quiet hours/caps
   });
 
   // Parse the pick; one clarifying re-ask on ambiguity, then hand to a human.
@@ -526,7 +535,8 @@ export async function rescheduleConversation(input: RescheduleInput): Promise<st
         locationId: input.locationId,
         patientSourceId: input.patientSourceId,
         body: `Sorry, I didn't catch that — just reply ${choiceText} to pick a time, and we'll take care of the rest.`,
-        workflowId: wfId
+        workflowId: wfId,
+        kind: "conversation"
       });
     }
   }
@@ -576,7 +586,8 @@ export async function rescheduleConversation(input: RescheduleInput): Promise<st
     locationId: input.locationId,
     patientSourceId: input.patientSourceId,
     body: `You're all set — see you ${slot.label}. Reply CHANGE if you need to reschedule.`,
-    workflowId: wfId
+    workflowId: wfId,
+    kind: "confirmation"
   });
   await acts.finalizeReschedule({
     orgId: input.orgId, locationId: input.locationId, workflowId: wfId,
@@ -620,14 +631,17 @@ export async function treatmentOutreach(input: TreatmentOutreachInput): Promise<
   }
   await acts.setActionStatus(plan.actionId, "approved", approval.value!.decidedBy);
 
+  let delivered = 0;
   for (const r of plan.recipients) {
-    await acts.sendOutreachSms({
+    const outcome = await acts.sendOutreachSms({
       orgId: input.orgId,
       locationId: input.locationId,
       patientSourceId: r.patientSourceId,
       body: r.message,
-      workflowId: wfId
+      workflowId: wfId,
+      kind: "outreach"
     });
+    if (outcome !== "blocked") delivered++;
     await sleep("2 seconds"); // rate limit between texts
   }
   await acts.setActionStatus(plan.actionId, "executed", null);
@@ -658,7 +672,7 @@ export async function treatmentOutreach(input: TreatmentOutreachInput): Promise<
       parentClosePolicy: ParentClosePolicy.PARENT_CLOSE_POLICY_ABANDON
     });
   }
-  return `sent-${plan.recipients.length}-engaged-${engaged.size}`;
+  return `sent-${delivered}-engaged-${engaged.size}`;
 }
 
 // --- C2: appointment reminders + confirmation write-back ----------------------------
@@ -698,14 +712,15 @@ export async function reminderSweep(input: ReminderSweepInput): Promise<string> 
 
   let sent = 0;
   for (const r of recipients) {
-    await acts.sendOutreachSms({
+    const outcome = await acts.sendOutreachSms({
       orgId: input.orgId,
       locationId: input.locationId,
       patientSourceId: r.patientSourceId,
       body: r.message,
-      workflowId: wfId
+      workflowId: wfId,
+      kind: "outreach"
     });
-    sent++;
+    if (outcome !== "blocked") sent++;
     await sleep("2 seconds"); // rate limit between texts
   }
   if (actionId !== null) await acts.setActionStatus(actionId, "executed", null);

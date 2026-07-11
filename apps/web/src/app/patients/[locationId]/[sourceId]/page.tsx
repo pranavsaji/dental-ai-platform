@@ -57,6 +57,8 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
   const [previsit, setPrevisit] = useState<Previsit | null>(null);
   const [previsitBusy, setPrevisitBusy] = useState(false);
   const [elig, setElig] = useState<EligCheck | null>(null);
+  const [stmtBusy, setStmtBusy] = useState(false);
+  const [stmtMsg, setStmtMsg] = useState("");
 
   useEffect(() => {
     api<Timeline>(`/portal/patients/${locationId}/${sourceId}`).then(setData).catch(() => {});
@@ -64,6 +66,24 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
       .then((rows) => setElig(rows[0] ?? null))
       .catch(() => {});
   }, [locationId, sourceId]);
+
+  // E3: statement/balance notice email (policy-gated — the outcome tells the
+  // staff member whether it sent, queued for morning, or was blocked).
+  async function emailStatement() {
+    setStmtBusy(true);
+    setStmtMsg("");
+    try {
+      const res = await api<{ outcome: string; reason: string | null }>(
+        `/portal/billing/statement-email/${sourceId}?locationId=${locationId}`, { method: "POST" });
+      setStmtMsg(res.outcome === "sent" ? "Statement emailed — see the Comms Console."
+        : res.outcome === "queued" ? "Queued — sends at 8:00 patient time."
+        : `Blocked: ${res.reason ?? "messaging policy"}.`);
+    } catch (e: any) {
+      setStmtMsg(`Failed: ${e.message ?? e}`);
+    } finally {
+      setStmtBusy(false);
+    }
+  }
 
   async function generatePrevisit() {
     setPrevisitBusy(true);
@@ -247,6 +267,17 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
                 )}
               </div>
             )}
+            {/* E3: statement/balance notice over the email channel. */}
+            <div className="border-t border-line/50 pt-3">
+              <button
+                onClick={emailStatement}
+                disabled={stmtBusy}
+                className="rounded-md border border-line px-3 py-1.5 text-xs text-ink-soft hover:border-teal hover:text-teal disabled:opacity-50"
+              >
+                ✉ Email statement
+              </button>
+              {stmtMsg && <span className="ml-2 text-xs text-ink-faint">{stmtMsg}</span>}
+            </div>
           </div>
         </Card>
       </div>

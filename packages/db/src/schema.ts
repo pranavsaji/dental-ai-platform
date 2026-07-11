@@ -314,13 +314,50 @@ export const smsMessages = pgTable("sms_messages", {
   provider: text("provider").notNull().default("console"), // console | twilio
   toNumber: text("to_number").notNull().default(""),
   providerSid: text("provider_sid"),
-  status: text("status").notNull().default("recorded"), // recorded | queued | sent | delivered | undelivered | failed
+  // E1 policy engine: outreach is subject to quiet hours + frequency caps;
+  // conversation replies and booking confirmations are transactional and only
+  // consent-gated. Blocked/queued outcomes land on the row as a status so the
+  // SMS console shows exactly why a message never left the platform.
+  kind: text("kind").notNull().default("outreach"), // outreach | conversation | confirmation
+  // recorded | queued | sent | delivered | undelivered | failed
+  // | queued_quiet_hours (delayed send; send_after says when)
+  // | blocked_consent | blocked_quiet_hours | blocked_frequency
+  status: text("status").notNull().default("recorded"),
+  sendAfter: timestamp("send_after", { withTimezone: true }),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index("sms_loc_pat_idx").on(t.locationId, t.patientSourceId),
   index("sms_provider_sid_idx").on(t.providerSid)
 ]);
+
+// E3: email as a second channel. Deliberately a parallel table rather than a
+// generalized `messages` migration — sms_messages carries SMS-only plumbing
+// (Twilio SIDs, reply threading) and nothing consumes a cross-channel thread
+// yet; the patient timeline can union the two when it needs to. Outbound only
+// (no inbound email path). Same E1 policy vocabulary as sms_messages.
+export const emailMessages = pgTable("email_messages", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  // Null for staff-facing sends (e.g. the huddle digest emailed to a user).
+  patientSourceId: bigint("patient_source_id", { mode: "number" }),
+  toEmail: text("to_email").notNull().default(""),
+  subject: text("subject").notNull(),
+  bodyHtml: text("body_html").notNull(),
+  // Versioned checked-in templates (apps/api/src/email/templates.ts).
+  template: text("template").notNull(), // recall_letter | huddle_digest | statement_notice | appeal_sent
+  templateVersion: integer("template_version").notNull().default(1),
+  workflowId: text("workflow_id"),
+  provider: text("provider").notNull().default("console"), // console | smtp
+  kind: text("kind").notNull().default("outreach"), // outreach | notice
+  // recorded | sent | failed | queued_quiet_hours | blocked_consent
+  // | blocked_quiet_hours | blocked_frequency
+  status: text("status").notNull().default("recorded"),
+  sendAfter: timestamp("send_after", { withTimezone: true }),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (t) => [index("email_loc_pat_idx").on(t.locationId, t.patientSourceId)]);
 
 // Task management substrate (A5): the durable, assignable work queue every
 // workflow dead-end escalates into. Built once, consumed by B/C/E features.
@@ -341,6 +378,10 @@ export const tasks = pgTable("tasks", {
   // Deep link into the record the task is about (claim, patient, appointment…)
   resourceType: text("resource_type"),
   resourceId: text("resource_id"),
+  // E2: structured payload for tasks that carry more than prose — e.g. a
+  // patient_question holds {message, intent, suggestedReply, usedLlm} so the
+  // /tasks reply box can prefill the agent draft without parsing body text.
+  data: jsonb("data"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   resolvedBy: text("resolved_by")

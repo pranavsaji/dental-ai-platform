@@ -19,6 +19,8 @@ interface Task {
   workflowId: string | null;
   resourceType: string | null;
   resourceId: string | null;
+  // E2: patient_question tasks carry {message, intent, suggestedReply, usedLlm}
+  data: { message?: string; intent?: string; suggestedReply?: string; usedLlm?: boolean } | null;
   createdAt: string;
   resolvedBy: string | null;
 }
@@ -51,6 +53,10 @@ export default function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<string>("active");
   const [typeFilter, setTypeFilter] = useState<string>("");
   const [busy, setBusy] = useState<number | null>(null);
+  // E2: per-task draft reply (prefilled from the agent suggestion, editable).
+  const [replyOpen, setReplyOpen] = useState<number | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!location) return;
@@ -78,6 +84,26 @@ export default function TasksPage() {
         });
       }
       load();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // E2: the human gate — review/edit the agent's draft, then send + resolve.
+  async function sendReply(id: number) {
+    if (!location || !replyText.trim()) return;
+    setBusy(id);
+    setReplyError(null);
+    try {
+      await api(`/portal/tasks/${id}/reply?locationId=${location.id}`, {
+        method: "POST",
+        body: JSON.stringify({ body: replyText.trim() })
+      });
+      setReplyOpen(null);
+      setReplyText("");
+      load();
+    } catch (e) {
+      setReplyError((e as Error).message || "Reply failed");
     } finally {
       setBusy(null);
     }
@@ -153,6 +179,48 @@ export default function TasksPage() {
                         ) : t.title}
                       </div>
                       {t.body && <div className="mt-0.5 max-w-xl text-xs leading-relaxed text-ink-soft">{t.body}</div>}
+                      {t.type === "patient_question" && t.data?.suggestedReply &&
+                        (t.status === "open" || t.status === "in_progress") && (
+                        <div className="mt-2 max-w-xl">
+                          {replyOpen === t.id ? (
+                            <div className="rounded-md border border-line bg-surface p-2">
+                              <div className="mb-1 text-[11px] text-ink-faint">
+                                Reply to the patient ({t.data.usedLlm ? "AI draft" : "template draft"}
+                                {t.data.intent ? ` · intent: ${t.data.intent.replace(/_/g, " ")}` : ""}) — edit before sending:
+                              </div>
+                              <textarea
+                                className="w-full rounded-md border border-line bg-surface px-2 py-1.5 text-xs leading-relaxed outline-none focus:border-teal"
+                                rows={3}
+                                value={replyText}
+                                onChange={(e) => setReplyText(e.target.value)}
+                              />
+                              {replyError && <div className="mt-1 text-[11px] text-coral">{replyError}</div>}
+                              <div className="mt-1 flex gap-2">
+                                <button
+                                  disabled={busy === t.id || !replyText.trim()}
+                                  onClick={() => sendReply(t.id)}
+                                  className="rounded-md bg-pine px-3 py-1 text-[11px] font-semibold text-white hover:bg-pine-2 disabled:opacity-50"
+                                >
+                                  Send reply & resolve
+                                </button>
+                                <button
+                                  onClick={() => { setReplyOpen(null); setReplyError(null); }}
+                                  className="rounded-md border border-line px-3 py-1 text-[11px] text-ink-soft hover:border-teal hover:text-teal"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => { setReplyOpen(t.id); setReplyText(t.data?.suggestedReply ?? ""); setReplyError(null); }}
+                              className="rounded-md border border-teal/50 px-3 py-1 text-[11px] font-medium text-teal hover:bg-mint"
+                            >
+                              Review suggested reply →
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <div className="mt-0.5 text-[11px] text-ink-faint">
                         by {t.createdBy}
                         {t.resourceType && !link && <> · {t.resourceType} <span className="num">{t.resourceId}</span></>}

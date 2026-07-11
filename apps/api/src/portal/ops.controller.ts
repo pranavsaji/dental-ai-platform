@@ -8,6 +8,8 @@ import { AnalyticsService } from "./analytics.service";
 import { AuditService } from "../audit.service";
 import { AgentsClient } from "../temporal/agents.client";
 import { TemporalService } from "../temporal/temporal.service";
+import { EmailService } from "../email/email.service";
+import { huddleDigest } from "../email/templates";
 
 const AGENTS_URL = () => process.env.AGENTS_URL ?? "http://localhost:8000";
 
@@ -20,7 +22,8 @@ export class OpsController {
     private analytics: AnalyticsService,
     private audit: AuditService,
     private agents: AgentsClient,
-    private temporal: TemporalService
+    private temporal: TemporalService,
+    private email: EmailService
   ) {}
 
   @Post("recall-campaign")
@@ -83,6 +86,33 @@ export class OpsController {
   ) {
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return { digest: await this.portal.huddleDigest(loc.id, date) };
+  }
+
+  // E3: email today's huddle digest to the requesting user (staff-facing send
+  // — the huddle_digest template, no patient policy involved).
+  @Post("huddle-email")
+  async emailHuddle(
+    @CurrentUser() user: SessionUser,
+    @Query("locationId") locationId?: string,
+    @Query("date") date?: string
+  ) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const digest = await this.portal.huddleDigest(loc.id, date);
+    if (!digest) throw new BadRequestException("No huddle digest for that date — generate one first");
+    const result = await this.email.sendToStaff({
+      orgId: user.orgId,
+      locationId: loc.id,
+      toEmail: user.email,
+      email: huddleDigest({
+        locationName: loc.name,
+        date: digest.date,
+        narrative: digest.narrative,
+        actionItems: (digest.actionItems as Array<{ title: string; priority: string }>) ?? []
+      }),
+      actor: user.email,
+      purpose: `huddle digest ${digest.date} emailed to self`
+    });
+    return { ok: true, outcome: result.outcome };
   }
 
   // C2: manual reminder sweep (the cron fires at 16:00 for T+1).

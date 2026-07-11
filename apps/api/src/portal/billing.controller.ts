@@ -1,12 +1,18 @@
 import {
-  BadRequestException, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards
+  BadRequestException, Controller, Get, Inject, NotFoundException, Param, ParseIntPipe,
+  Post, Query, UseGuards
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { claims, patients, procedures } from "@dental/db";
+import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { AuditService } from "../audit.service";
 import { PortalService } from "./portal.service";
 import { BillingService } from "./billing.service";
 import { TemporalService } from "../temporal/temporal.service";
+import { EmailService } from "../email/email.service";
+import { statementNotice } from "../email/templates";
 
 // Billing worklist API (B5): everything the billing team needs to work AR,
 // denials, pre-auths, and eligibility exceptions without touching the PMS.
@@ -15,11 +21,63 @@ import { TemporalService } from "../temporal/temporal.service";
 @UseGuards(JwtGuard)
 export class BillingController {
   constructor(
+    @Inject(DB) private db: Db,
     private portal: PortalService,
     private billing: BillingService,
     private audit: AuditService,
-    private temporal: TemporalService
+    private temporal: TemporalService,
+    private email: EmailService
   ) {}
+
+  // E3: email the patient a statement/balance notice (versioned template,
+  // policy-gated outreach — consent, quiet hours, and frequency caps apply).
+  @Post("statement-email/:patientSourceId")
+  async statementEmail(
+    @CurrentUser() user: SessionUser,
+    @Param("patientSourceId", ParseIntPipe) patientSourceId: number,
+    @Query("locationId") locationId?: string
+  ) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const [pat] = await this.db
+      .select({ firstName: patients.firstName })
+      .from(patients)
+      .where(and(eq(patients.locationId, loc.id), eq(patients.sourceId, patientSourceId)));
+    if (!pat) throw new NotFoundException("Patient not found");
+    const [ar] = await this.db
+      .select({ value: sql<number>`coalesce(sum(${claims.claimFee} - ${claims.insPayAmt}), 0)::float` })
+      .from(claims)
+      .where(and(
+        eq(claims.locationId, loc.id),
+        eq(claims.patientSourceId, patientSourceId),
+        sql`${claims.status} in ('sent', 'waiting')`
+      ));
+    const [lastVisit] = await this.db
+      .select({ procDate: procedures.procDate })
+      .from(procedures)
+      .where(and(
+        eq(procedures.locationId, loc.id),
+        eq(procedures.patientSourceId, patientSourceId),
+        eq(procedures.status, "complete")
+      ))
+      .orderBy(desc(procedures.procDate))
+      .limit(1);
+    const result = await this.email.sendToPatient({
+      orgId: user.orgId,
+      locationId: loc.id,
+      patientSourceId,
+      email: statementNotice({
+        locationName: loc.name,
+        patientFirst: pat.firstName,
+        pendingInsurance: Math.max(0, ar?.value ?? 0),
+        lastVisit: lastVisit?.procDate ?? null
+      }),
+      workflowId: null,
+      actor: user.email,
+      purpose: "statement notice requested from patient chart",
+      kind: "outreach"
+    });
+    return { ok: true, outcome: result.outcome, reason: result.reason ?? null };
+  }
 
   @Get("summary")
   async summary(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {

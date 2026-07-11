@@ -102,9 +102,19 @@ export interface ReschedulePlan {
 export interface ActivitiesInterface {
   proposeBackfill(input: ProposeBackfillInput): Promise<BackfillProposal | null>;
   setActionStatus(actionId: number, status: string, decidedBy: string | null): Promise<void>;
+  // E1: returns the policy verdict so workflows can skip blocked recipients
+  // instead of waiting on replies that can never come. kind defaults to
+  // outreach (quiet hours + caps); conversation/confirmation are consent-only.
   sendOutreachSms(input: {
     orgId: number; locationId: number; patientSourceId: number; body: string; workflowId: string;
-  }): Promise<void>;
+    kind?: "outreach" | "conversation" | "confirmation";
+  }): Promise<"sent" | "queued" | "blocked">;
+  // E3: channel-aware recall delivery — email template for patients who
+  // prefer email, SMS otherwise; both behind the same policy gate.
+  sendRecallMessage(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    recipient: { patientSourceId: number; message: string; patientFirst?: string; dateDue?: string };
+  }): Promise<"sent" | "queued" | "blocked">;
   issueBookingCommand(input: {
     orgId: number; locationId: number; workflowId: string; patientSourceId: number;
     providerSourceId: number; operatorySourceId: number; startsAt: string;
@@ -133,7 +143,10 @@ export interface ActivitiesInterface {
   }): Promise<void>;
   prepareRecallCampaign(input: {
     orgId: number; locationId: number; siteKey: string; batchSize: number; workflowId: string;
-  }): Promise<{ actionId: number; recipients: Array<{ patientSourceId: number; message: string }> } | null>;
+  }): Promise<{
+    actionId: number;
+    recipients: Array<{ patientSourceId: number; message: string; patientFirst?: string; dateDue?: string }>;
+  } | null>;
   // Task substrate (A5): the durable, assignable escalation path every
   // workflow can use instead of (or in addition to) a proposed-action card.
   createTask(input: {

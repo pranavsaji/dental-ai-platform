@@ -69,6 +69,17 @@ export default function OverviewPage() {
     }
   }
 
+  // E3: email the visible digest to the signed-in user (huddle_digest template).
+  async function emailHuddle() {
+    if (!location) return;
+    try {
+      await api(`/portal/ops/huddle-email?locationId=${location.id}&date=${huddleDate}`, { method: "POST" });
+      setOpsMsg("Huddle digest emailed — see the Email tab of the Comms Console.");
+    } catch (e: any) {
+      setOpsMsg(`Email failed: ${e.message ?? e}`);
+    }
+  }
+
   // C1: one-click task from a huddle action item.
   async function createHuddleTask(item: { title: string; priority: string; taskType: string }) {
     if (!location) return;
@@ -139,6 +150,15 @@ export default function OverviewPage() {
             {huddleDate !== today && (
               <button onClick={() => setHuddleDate(today)} className="text-xs font-medium text-teal hover:underline">
                 Today
+              </button>
+            )}
+            {huddle && (
+              <button
+                onClick={() => emailHuddle()}
+                className="rounded-md border border-line bg-surface px-3 py-1.5 text-xs hover:border-teal hover:text-teal"
+                title="Email this digest to yourself (E3 huddle_digest template)"
+              >
+                ✉ Email me
               </button>
             )}
             {huddleDate === today && (

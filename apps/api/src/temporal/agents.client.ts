@@ -330,6 +330,51 @@ export class AgentsClient {
     }
   }
 
+  // --- Phase E: inbound intent router (E2) -------------------------------------
+
+  // Classifies an inbound patient text that no live workflow claimed and
+  // drafts a suggested reply grounded ONLY in the provided context. The reply
+  // is never sent autonomously — it prefills the /tasks reply box for staff.
+  // No-LLM fallback: intent `other` + a safe acknowledgement template.
+  async classifyIntent(input: {
+    message: string;
+    patientName: string;
+    locationName: string;
+    nextAppointment: string | null;
+    lastVisit: string | null;
+    openClaimsValue: number;
+  }): Promise<{
+    intent: "question" | "billing_question" | "reschedule" | "confirm" | "other";
+    suggestedReply: string;
+    usedLlm: boolean;
+  }> {
+    const fallback = () => ({
+      intent: "other" as const,
+      suggestedReply:
+        `Hi ${input.patientName.split(" ")[0]}, thanks for your message — this is ${input.locationName}. ` +
+        `A member of our front desk team will get back to you shortly. If it's urgent, please call us.`,
+      usedLlm: false
+    });
+    const INTENTS = ["question", "billing_question", "reschedule", "confirm", "other"];
+    try {
+      const res = await fetch(`${this.baseUrl}/sms/intent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(60_000)
+      });
+      if (!res.ok) throw new Error(`agents service HTTP ${res.status}`);
+      const out = (await res.json()) as { intent: string; suggestedReply: string; usedLlm: boolean };
+      if (!INTENTS.includes(out.intent) || !out.suggestedReply?.trim()) {
+        throw new Error("agent returned an invalid classification");
+      }
+      return out as Awaited<ReturnType<AgentsClient["classifyIntent"]>>;
+    } catch (err) {
+      this.log.warn(`intent agent unavailable (${(err as Error).message}); classifying as 'other'`);
+      return fallback();
+    }
+  }
+
   async reviewClaims(input: {
     locationName: string;
     claims: Array<{

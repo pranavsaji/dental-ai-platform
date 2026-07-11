@@ -3,7 +3,7 @@ import {
   Param, ParseIntPipe, Post, Query, UseGuards
 } from "@nestjs/common";
 import { and, desc, eq } from "drizzle-orm";
-import { patients, proposedActions, smsMessages } from "@dental/db";
+import { emailMessages, patients, proposedActions, smsMessages } from "@dental/db";
 import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
@@ -94,6 +94,38 @@ export class ActionsController {
       .orderBy(smsMessages.createdAt)
       .limit(200);
     return rows;
+  }
+
+  // E3: the Email tab of the comms console — outbound only (no inbound email
+  // path exists); console rows are the simulator, smtp rows are real sends.
+  @Get("email")
+  async listEmail(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    return this.db
+      .select({
+        id: emailMessages.id,
+        patientSourceId: emailMessages.patientSourceId,
+        toEmail: emailMessages.toEmail,
+        subject: emailMessages.subject,
+        bodyHtml: emailMessages.bodyHtml,
+        template: emailMessages.template,
+        templateVersion: emailMessages.templateVersion,
+        provider: emailMessages.provider,
+        kind: emailMessages.kind,
+        status: emailMessages.status,
+        error: emailMessages.error,
+        createdAt: emailMessages.createdAt,
+        patientFirst: patients.firstName,
+        patientLast: patients.lastName
+      })
+      .from(emailMessages)
+      .leftJoin(patients, and(
+        eq(patients.locationId, emailMessages.locationId),
+        eq(patients.sourceId, emailMessages.patientSourceId)
+      ))
+      .where(eq(emailMessages.locationId, loc.id))
+      .orderBy(emailMessages.createdAt)
+      .limit(200);
   }
 
   @Post("sms/inbound")

@@ -13,6 +13,8 @@ import { CLEARINGHOUSE, type ClearinghousePort } from "../clearinghouse";
 import { MetricsService } from "../portal/metrics.service";
 import { TasksService } from "../portal/tasks.service";
 import { SmsService } from "../sms/sms.service";
+import { EmailService } from "../email/email.service";
+import { appealSentNotice, recallLetter } from "../email/templates";
 import { AgentsClient, type SchedulingCandidate } from "./agents.client";
 import { findOpenSlots } from "./slots";
 import type {
@@ -35,6 +37,7 @@ export class ActivitiesService implements ActivitiesInterface {
     private commands: CommandsService,
     private tasks: TasksService,
     private sms: SmsService,
+    private email: EmailService,
     private agents: AgentsClient,
     private metrics: MetricsService
   ) {}
@@ -198,17 +201,67 @@ export class ActivitiesService implements ActivitiesInterface {
       .where(eq(proposedActions.id, actionId));
   }
 
+  // E1: the policy verdict flows back to the workflow so a blocked candidate
+  // is skipped immediately (the cascade moves on instead of waiting 4h for a
+  // reply that can never come). kind defaults to outreach — the most-checked.
   async sendOutreachSms(input: {
     orgId: number; locationId: number; patientSourceId: number; body: string; workflowId: string;
-  }): Promise<void> {
-    await this.sms.send({
+    kind?: "outreach" | "conversation" | "confirmation";
+  }): Promise<"sent" | "queued" | "blocked"> {
+    const res = await this.sms.send({
       orgId: input.orgId,
       locationId: input.locationId,
       patientSourceId: input.patientSourceId,
       body: input.body,
       workflowId: input.workflowId,
       actor: "agent:scheduling",
-      purpose: "approved outreach"
+      purpose: "approved outreach",
+      kind: input.kind ?? "outreach"
+    });
+    return res.outcome;
+  }
+
+  // E3: recall outreach honors preferred_channel — patients who prefer email
+  // (and have an address + consent) get the recall letter template; everyone
+  // else gets the SMS. Both paths cross the same E1 policy gate.
+  async sendRecallMessage(input: {
+    orgId: number; locationId: number; siteKey: string; workflowId: string;
+    recipient: { patientSourceId: number; message: string; patientFirst?: string; dateDue?: string };
+  }): Promise<"sent" | "queued" | "blocked"> {
+    const r = input.recipient;
+    const [prefs] = await this.db
+      .select({ preferredChannel: patientContactPrefs.preferredChannel })
+      .from(patientContactPrefs)
+      .where(and(
+        eq(patientContactPrefs.locationId, input.locationId),
+        eq(patientContactPrefs.patientSourceId, r.patientSourceId)
+      ));
+    if (prefs?.preferredChannel === "email") {
+      const res = await this.email.sendToPatient({
+        orgId: input.orgId,
+        locationId: input.locationId,
+        patientSourceId: r.patientSourceId,
+        email: recallLetter({
+          locationName: `Lone Star Dental — site ${input.siteKey.toUpperCase()}`,
+          patientFirst: r.patientFirst ?? "there",
+          dueSince: r.dateDue ?? "your last visit"
+        }),
+        workflowId: input.workflowId,
+        actor: "agent:scheduling",
+        purpose: "recall campaign (email — preferred channel)",
+        kind: "outreach"
+      });
+      // A patient who prefers email but has no usable address still gets the
+      // SMS rather than silently dropping out of the campaign.
+      if (res.outcome !== "blocked" || res.reason !== "no_email") return res.outcome;
+    }
+    return this.sendOutreachSms({
+      orgId: input.orgId,
+      locationId: input.locationId,
+      patientSourceId: r.patientSourceId,
+      body: r.message,
+      workflowId: input.workflowId,
+      kind: "outreach"
     });
   }
 
@@ -249,7 +302,8 @@ export class ActivitiesService implements ActivitiesInterface {
       body: `You're all set — see you ${when}. Reply CHANGE if you need to reschedule.`,
       workflowId: input.workflowId,
       actor: "agent:scheduling",
-      purpose: "booking confirmation"
+      purpose: "booking confirmation",
+      kind: "confirmation"
     });
     await this.audit.log({
       orgId: input.orgId, locationId: input.locationId, actorType: "agent",
@@ -448,8 +502,12 @@ export class ActivitiesService implements ActivitiesInterface {
     if (rows.length === 0) return null;
 
     const site = `Lone Star Dental — site ${input.siteKey.toUpperCase()}`;
+    // E3: patientFirst/dateDue ride along so sendRecallMessage can render the
+    // recall-letter email for patients whose preferred channel is email.
     const recipients = rows.map((r) => ({
       patientSourceId: r.patientSourceId,
+      patientFirst: r.firstName,
+      dateDue: r.dateDue,
       message:
         `Hi ${r.firstName}, this is ${site}. Our records show you've been due for a hygiene ` +
         `visit since ${r.dateDue}. Reply YES and we'll text you our next openings, or call us anytime.`
@@ -1054,6 +1112,46 @@ export class ActivitiesService implements ActivitiesInterface {
     await this.db.update(claimDenials)
       .set({ appealStatus: "sent" })
       .where(and(eq(claimDenials.id, input.denialId), eq(claimDenials.locationId, input.locationId)));
+
+    // E3: keep the patient in the loop — a transactional appeal-sent notice
+    // goes to their email (consent-gated; silently skipped without an address).
+    const [ctx] = await this.db
+      .select({
+        firstName: patients.firstName,
+        carrierName: insPlans.carrierName,
+        dateService: claims.dateService,
+        siteKey: locations.key
+      })
+      .from(claims)
+      .innerJoin(patients, and(
+        eq(patients.locationId, claims.locationId),
+        eq(patients.sourceId, claims.patientSourceId)))
+      .innerJoin(insPlans, and(
+        eq(insPlans.locationId, claims.locationId),
+        eq(insPlans.sourceId, claims.planSourceId)))
+      .innerJoin(locations, eq(locations.id, claims.locationId))
+      .where(and(
+        eq(claims.locationId, input.locationId),
+        eq(claims.sourceId, input.claimSourceId)
+      ));
+    if (ctx) {
+      await this.email.sendToPatient({
+        orgId: input.orgId,
+        locationId: input.locationId,
+        patientSourceId: input.patientSourceId,
+        email: appealSentNotice({
+          locationName: `Lone Star Dental — site ${ctx.siteKey.toUpperCase()}`,
+          patientFirst: ctx.firstName,
+          carrierName: ctx.carrierName,
+          dateService: ctx.dateService
+        }),
+        workflowId: input.workflowId,
+        actor: "agent:billing",
+        purpose: "appeal-sent notice",
+        kind: "notice"
+      });
+    }
+
     await this.audit.log({
       orgId: input.orgId, locationId: input.locationId, actorType: "agent",
       actor: "agent:billing", action: "appeal.sent", resource: "claim",

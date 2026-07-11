@@ -45,6 +45,8 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
           proposeBackfill: this.activities.proposeBackfill.bind(this.activities),
           setActionStatus: this.activities.setActionStatus.bind(this.activities),
           sendOutreachSms: this.activities.sendOutreachSms.bind(this.activities),
+          // E3: channel-aware recall delivery (email preferred-channel patients)
+          sendRecallMessage: this.activities.sendRecallMessage.bind(this.activities),
           issueBookingCommand: this.activities.issueBookingCommand.bind(this.activities),
           getCommandStatus: this.activities.getCommandStatus.bind(this.activities),
           finalizeBackfill: this.activities.finalizeBackfill.bind(this.activities),
@@ -228,6 +230,19 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
   async signalSmsReply(workflowId: string, body: string, patientSourceId?: number): Promise<void> {
     if (!this.client) throw new Error("Temporal not connected");
     await this.client.workflow.getHandle(workflowId).signal("smsReply", { body, patientSourceId });
+  }
+
+  // E2: reply threading only makes sense into a live workflow — a signal to a
+  // completed one silently vanishes, which is exactly the gap the intent
+  // router closes. Missing/unknown workflows simply report not-running.
+  async isWorkflowRunning(workflowId: string): Promise<boolean> {
+    if (!this.client) return false;
+    try {
+      const desc = await this.client.workflow.getHandle(workflowId).describe();
+      return desc.status.name === "RUNNING";
+    } catch {
+      return false;
+    }
   }
 
   // B3: resolving a task created by a parked workflow resumes that workflow.

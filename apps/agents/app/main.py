@@ -12,6 +12,7 @@ from .clinical import (
 from .config import MODEL, llm_available, provider_chain
 from .huddle import HuddleRequest, HuddleResponse, draft_huddle
 from .insights import InsightsRequest, InsightsResponse, draft_insights
+from .intent import IntentRequest, IntentResponse, classify_intent
 from .scheduling import (
     OutreachRequest, OutreachResponse, ProposeRequest, ProposeResponse, outreach, propose,
 )
@@ -48,6 +49,11 @@ def ops_huddle(req: HuddleRequest) -> HuddleResponse:
 @app.post("/ops/insights", response_model=InsightsResponse)
 def ops_insights(req: InsightsRequest) -> InsightsResponse:
     return draft_insights(req)
+
+
+@app.post("/sms/intent", response_model=IntentResponse)
+def sms_intent(req: IntentRequest) -> IntentResponse:
+    return classify_intent(req)
 
 
 @app.post("/billing/review", response_model=ReviewResponse)

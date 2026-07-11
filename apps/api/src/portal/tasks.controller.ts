@@ -5,6 +5,7 @@ import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
 import { TasksService } from "./tasks.service";
 import { TemporalService } from "../temporal/temporal.service";
+import { SmsService } from "../sms/sms.service";
 
 @Controller("portal/tasks")
 @UseGuards(JwtGuard)
@@ -12,7 +13,8 @@ export class TasksController {
   constructor(
     private portal: PortalService,
     private tasksService: TasksService,
-    private temporal: TemporalService
+    private temporal: TemporalService,
+    private sms: SmsService
   ) {}
 
   @Get()
@@ -67,6 +69,45 @@ export class TasksController {
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     await this.tasksService.claim(user.orgId, loc.id, id, user.sub, user.email);
     return { ok: true };
+  }
+
+  // E2: send the (staff-reviewed, possibly edited) reply to a patient_question
+  // task and resolve it. This is THE human gate the intent router promises —
+  // the agent's draft never reaches the patient without passing through here.
+  @Post(":id/reply")
+  async reply(
+    @CurrentUser() user: SessionUser,
+    @Param("id", ParseIntPipe) id: number,
+    @Body() body: { body?: string },
+    @Query("locationId") locationId?: string
+  ) {
+    const text = body.body?.trim();
+    if (!text) throw new BadRequestException("reply body required");
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const task = await this.tasksService.get(user.orgId, loc.id, id);
+    if (task.type !== "patient_question") throw new BadRequestException("Only patient_question tasks accept replies");
+    if (task.status !== "open" && task.status !== "in_progress") {
+      throw new BadRequestException(`Task already ${task.status}`);
+    }
+    if (task.resourceType !== "patient" || !task.resourceId) {
+      throw new BadRequestException("Task has no patient to reply to");
+    }
+    const result = await this.sms.send({
+      orgId: user.orgId,
+      locationId: loc.id,
+      patientSourceId: Number(task.resourceId),
+      body: text,
+      workflowId: null,
+      actor: user.email,
+      purpose: `staff reply to patient question (task ${id})`,
+      kind: "conversation"
+    });
+    if (result.outcome === "blocked") {
+      // Don't silently resolve — the human should see why nothing went out.
+      throw new BadRequestException(`Reply blocked by messaging policy: ${result.reason}`);
+    }
+    await this.tasksService.resolve(user.orgId, loc.id, id, user.email, "done");
+    return { ok: true, outcome: result.outcome };
   }
 
   @Post(":id/resolve")

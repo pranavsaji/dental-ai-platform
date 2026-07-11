@@ -21,6 +21,9 @@ export interface CreateTaskInput {
   workflowId?: string | null;
   resourceType?: string | null;
   resourceId?: string | null;
+  // E2: structured payload (e.g. patient_question carries the inbound
+  // message, classified intent, and the agent-drafted suggested reply).
+  data?: Record<string, unknown> | null;
 }
 
 const PRIORITY_ORDER = sql`case ${tasks.priority}
@@ -46,7 +49,8 @@ export class TasksService {
       createdBy: input.createdBy,
       workflowId: input.workflowId ?? null,
       resourceType: input.resourceType ?? null,
-      resourceId: input.resourceId ?? null
+      resourceId: input.resourceId ?? null,
+      data: input.data ?? null
     }).returning({ id: tasks.id });
     await this.audit.log({
       orgId: input.orgId, locationId: input.locationId,
@@ -104,6 +108,11 @@ export class TasksService {
     });
     // Returned so the controller can resume a workflow parked on this task (B3).
     return task;
+  }
+
+  /** Tenancy-checked single-task read (E2's reply endpoint needs the payload). */
+  async get(orgId: number, locationId: number, taskId: number) {
+    return this.mustGet(orgId, locationId, taskId);
   }
 
   private async mustGet(orgId: number, locationId: number, taskId: number) {
