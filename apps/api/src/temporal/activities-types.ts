@@ -113,7 +113,7 @@ export interface ActivitiesInterface {
   // prefer email, SMS otherwise; both behind the same policy gate.
   sendRecallMessage(input: {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
-    recipient: { patientSourceId: number; message: string; patientFirst?: string; dateDue?: string };
+    recipient: { patientSourceId: number; message: string; patientFirst?: string; patientName?: string; dateDue?: string };
   }): Promise<"sent" | "queued" | "blocked">;
   issueBookingCommand(input: {
     orgId: number; locationId: number; workflowId: string; patientSourceId: number;
@@ -145,7 +145,7 @@ export interface ActivitiesInterface {
     orgId: number; locationId: number; siteKey: string; batchSize: number; workflowId: string;
   }): Promise<{
     actionId: number;
-    recipients: Array<{ patientSourceId: number; message: string; patientFirst?: string; dateDue?: string }>;
+    recipients: Array<{ patientSourceId: number; message: string; patientFirst?: string; patientName?: string; dateDue?: string }>;
   } | null>;
   // Task substrate (A5): the durable, assignable escalation path every
   // workflow can use instead of (or in addition to) a proposed-action card.

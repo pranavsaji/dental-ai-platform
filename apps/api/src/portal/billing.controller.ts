@@ -7,6 +7,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { claims, patients, procedures } from "@dental/db";
 import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
+import { ALL_ROLES, assertRole } from "../auth/roles";
 import { AuditService } from "../audit.service";
 import { PortalService } from "./portal.service";
 import { BillingService } from "./billing.service";
@@ -37,6 +38,7 @@ export class BillingController {
     @Param("patientSourceId", ParseIntPipe) patientSourceId: number,
     @Query("locationId") locationId?: string
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: patient-facing send — front desk's job
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const [pat] = await this.db
       .select({ firstName: patients.firstName })
@@ -115,6 +117,21 @@ export class BillingController {
     return this.billing.listUnscheduledTreatment(loc.id);
   }
 
+  // G3: payments ledger — the direct read surface for the synced payments
+  // entity. Summary reconciles to D1's collections for the same range.
+  @Get("payments")
+  async payments(
+    @CurrentUser() user: SessionUser,
+    @Query("locationId") locationId?: string,
+    @Query("days") days?: string,
+    @Query("type") type?: string
+  ) {
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
+    const n = Math.max(1, Math.min(365, Number(days) || 30));
+    const t = type === "insurance" || type === "patient" ? type : undefined;
+    return this.billing.listPayments(loc.id, n, t);
+  }
+
   // Freshest eligibility verdict per patient — powers the /schedule badge
   // column and the /billing exceptions strip.
   @Get("eligibility")
@@ -138,6 +155,7 @@ export class BillingController {
     @Param("sourceId", ParseIntPipe) sourceId: number,
     @Query("locationId") locationId?: string
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: billing ops — all in-location roles
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `claimfu-${loc.key}-c${sourceId}-${randomUUID().slice(0, 6)}`;
     try {
@@ -159,6 +177,7 @@ export class BillingController {
   // nightly cron. Runs the same insuranceVerification workflow.
   @Post("eligibility-sweep")
   async eligibilitySweep(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: billing ops — all in-location roles
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `elig-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {

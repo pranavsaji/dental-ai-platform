@@ -5,7 +5,7 @@
 // linked SSO identities. Every mutation is audited with actor + target.
 
 import {
-  BadRequestException, Body, Controller, ForbiddenException, Get, Inject,
+  BadRequestException, Body, Controller, Get, Inject,
   NotFoundException, Param, ParseIntPipe, Patch, Post, UseGuards
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
@@ -14,6 +14,7 @@ import { authIdentities, locations, scryptHash, users } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { CurrentUser, JwtGuard, invalidateDisabledCache, type SessionUser } from "../auth/auth";
+import { assertRole } from "../auth/roles";
 
 const ROLES = new Set(["admin", "provider", "staff"]);
 
@@ -32,7 +33,7 @@ export class AdminUsersController {
   ) {}
 
   private assertAdmin(user: SessionUser): void {
-    if (user.role !== "admin") throw new ForbiddenException("Admin role required");
+    assertRole(user, "admin"); // G4: shared gate — one grep-able policy helper
   }
 
   private async mustGet(orgId: number, id: number) {

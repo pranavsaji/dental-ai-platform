@@ -151,7 +151,7 @@ const TREND_METRICS: Array<{ key: keyof TrendPoint; label: string; money?: boole
 ];
 
 export default function AnalyticsPage() {
-  const { locations } = useApp();
+  const { user, locations } = useApp();
   const [days, setDays] = useState(30);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [trends, setTrends] = useState<Trends | null>(null);
@@ -272,13 +272,16 @@ export default function AnalyticsPage() {
             Last {d} days
           </button>
         ))}
-        <button
-          disabled={busy === "rollup"}
-          onClick={recompute}
-          className="ml-auto rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2 disabled:opacity-50"
-        >
-          ✳ Recompute rollups (7d)
-        </button>
+        {/* G4: multi-day backfills overwrite metric history — admin only. */}
+        {user.role === "admin" && (
+          <button
+            disabled={busy === "rollup"}
+            onClick={recompute}
+            className="ml-auto rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2 disabled:opacity-50"
+          >
+            ✳ Recompute rollups (7d)
+          </button>
+        )}
       </div>
 
       {summary && (

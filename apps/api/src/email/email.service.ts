@@ -8,7 +8,7 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, gte, notLike, sql } from "drizzle-orm";
 import nodemailer, { type Transporter } from "nodemailer";
-import { emailMessages, patientContactPrefs, patients } from "@dental/db";
+import { emailMessages, locations, patientContactPrefs, patients } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { evaluateMessagePolicy, localDayStartUtc, type MessageKind } from "../sms/policy";
@@ -187,7 +187,8 @@ export class EmailService {
         eq(patientContactPrefs.locationId, locationId),
         eq(patientContactPrefs.patientSourceId, patientSourceId)
       ));
-    const timezone = prefs?.timezone ?? "America/Chicago";
+    // G1: no prefs row ⇒ the location's timezone (set in /admin/locations).
+    const timezone = prefs?.timezone ?? (await this.locationTimezone(locationId));
     const { today, week } = await this.outboundCounts(locationId, patientSourceId, now, timezone);
     return evaluateMessagePolicy({
       kind,
@@ -198,6 +199,12 @@ export class EmailService {
       sentToday: today,
       sentThisWeek: week
     });
+  }
+
+  private async locationTimezone(locationId: number): Promise<string> {
+    const [loc] = await this.db.select({ timezone: locations.timezone })
+      .from(locations).where(eq(locations.id, locationId));
+    return loc?.timezone ?? "America/Chicago";
   }
 
   private async outboundCounts(locationId: number, patientSourceId: number, now: Date, timezone: string) {

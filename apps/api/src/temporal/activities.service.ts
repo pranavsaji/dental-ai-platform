@@ -243,7 +243,7 @@ export class ActivitiesService implements ActivitiesInterface {
   // else gets the SMS. Both paths cross the same E1 policy gate.
   async sendRecallMessage(input: {
     orgId: number; locationId: number; siteKey: string; workflowId: string;
-    recipient: { patientSourceId: number; message: string; patientFirst?: string; dateDue?: string };
+    recipient: { patientSourceId: number; message: string; patientFirst?: string; patientName?: string; dateDue?: string };
   }): Promise<"sent" | "queued" | "blocked"> {
     const r = input.recipient;
     const [prefs] = await this.db
@@ -488,7 +488,10 @@ export class ActivitiesService implements ActivitiesInterface {
 
   async prepareRecallCampaign(input: {
     orgId: number; locationId: number; siteKey: string; batchSize: number; workflowId: string;
-  }): Promise<{ actionId: number; recipients: Array<{ patientSourceId: number; message: string }> } | null> {
+  }): Promise<{
+    actionId: number;
+    recipients: Array<{ patientSourceId: number; message: string; patientFirst?: string; patientName?: string; dateDue?: string }>;
+  } | null> {
     const today = new Date().toISOString().slice(0, 10);
     const upcoming = this.db
       .select({ pat: appointments.patientSourceId })
@@ -502,6 +505,7 @@ export class ActivitiesService implements ActivitiesInterface {
       .select({
         patientSourceId: patients.sourceId,
         firstName: patients.firstName,
+        lastName: patients.lastName,
         dateDue: recalls.dateDue
       })
       .from(recalls)
@@ -523,10 +527,13 @@ export class ActivitiesService implements ActivitiesInterface {
     const site = `Lone Star Dental — site ${input.siteKey.toUpperCase()}`;
     // E3: patientFirst/dateDue ride along so sendRecallMessage can render the
     // recall-letter email for patients whose preferred channel is email.
+    // G5: patientName makes the Approvals preview render names, matching the
+    // reminder/outreach batch payloads.
     const recipients = rows.map((r) => ({
       patientSourceId: r.patientSourceId,
       patientFirst: r.firstName,
-      dateDue: r.dateDue,
+      patientName: `${r.firstName} ${r.lastName}`.trim(),
+      dateDue: r.dateDue ?? undefined,
       message:
         `Hi ${r.firstName}, this is ${site}. Our records show you've been due for a hygiene ` +
         `visit since ${r.dateDue}. Reply YES and we'll text you our next openings, or call us anytime.`

@@ -6,6 +6,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { emailMessages, patients, proposedActions, smsMessages } from "@dental/db";
 import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
+import { ALL_ROLES, assertRole } from "../auth/roles";
 import { PortalService } from "./portal.service";
 import { AuditService } from "../audit.service";
 import { TemporalService } from "../temporal/temporal.service";
@@ -39,6 +40,9 @@ export class ActionsController {
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { decision?: string }
   ) {
+    // G4: approval decisions (the human gate on agent sends/PMS writes) are
+    // front-desk work — all in-location roles, now stated explicitly.
+    assertRole(user, ...ALL_ROLES);
     if (body.decision !== "approved" && body.decision !== "rejected") {
       throw new BadRequestException("decision must be 'approved' or 'rejected'");
     }
@@ -133,6 +137,7 @@ export class ActionsController {
     @CurrentUser() user: SessionUser,
     @Body() body: { locationId?: number; patientSourceId?: number; body?: string }
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: SMS console simulator — all roles
     if (!body.locationId || !body.patientSourceId || !body.body?.trim()) {
       throw new BadRequestException("locationId, patientSourceId, body required");
     }

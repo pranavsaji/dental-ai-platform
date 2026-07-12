@@ -274,7 +274,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
   }
 
   const nav = ctx.user.role === "admin"
-    ? [...NAV, { href: "/admin/users", label: "Users", glyph: "⛭" }]
+    ? [
+        ...NAV,
+        { href: "/admin/users", label: "Users", glyph: "⛭" },
+        { href: "/admin/locations", label: "Locations", glyph: "⌖" }
+      ]
     : NAV;
 
   return (

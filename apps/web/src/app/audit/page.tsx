@@ -9,6 +9,15 @@ interface AuditRow {
   resource: string; resourceId: string; purpose: string; at: string;
 }
 
+// G2: result of GET /portal/audit/verify (F2's tamper-evidence check).
+interface ChainVerification {
+  ok: boolean;
+  checked: number;
+  brokenAtId: number | null;
+  detail: string;
+  anchor: { id: number; entryHash: string } | null;
+}
+
 const ACTOR_TONE: Record<string, string> = {
   user: "bg-mint text-pine",
   agent: "bg-amber-soft text-amber",
@@ -19,6 +28,22 @@ const ACTOR_TONE: Record<string, string> = {
 export default function AuditPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [error, setError] = useState("");
+  const [verify, setVerify] = useState<ChainVerification | null>(null);
+  const [verifying, setVerifying] = useState(false);
+
+  // G2: the hash-chain check, previously API-only. The endpoint audits the
+  // verification itself, so the refreshed table shows this click too.
+  async function runVerify() {
+    setVerifying(true);
+    setVerify(null);
+    try {
+      setVerify(await api<ChainVerification>("/portal/audit/verify"));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   useEffect(() => {
     const load = () =>
@@ -36,6 +61,37 @@ export default function AuditPage() {
         Append-only record of every PHI access and mutation across users, AI agents, and edge
         synchronizers. Synthetic data only — this demonstrates the HIPAA audit-control pattern.
       </p>
+
+      {/* G2: tamper-evidence check — each entry's hash commits to the previous
+          one, so edits, deletions, or reordering are detectable on demand
+          (a nightly cron runs the same walk and raises an urgent task on
+          breakage). */}
+      <div className="rise rise-1 mb-4 flex items-center gap-4">
+        <button
+          disabled={verifying}
+          onClick={() => void runVerify()}
+          className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2 disabled:opacity-50"
+        >
+          {verifying ? "Verifying…" : "⛓ Verify chain"}
+        </button>
+        {verify && (
+          verify.ok ? (
+            <span className="rounded-md border border-teal/40 bg-mint/40 px-3 py-1.5 text-xs text-pine">
+              Chain intact — {verify.checked} hashed {verify.checked === 1 ? "entry" : "entries"} verified
+              {verify.anchor && (
+                <span className="num ml-1 text-pine/70">
+                  · anchor #{verify.anchor.id} {verify.anchor.entryHash.slice(0, 16)}…
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="rounded-md border border-coral/40 bg-coral-soft px-3 py-1.5 text-xs font-medium text-coral">
+              Chain broken at entry #{verify.brokenAtId}: {verify.detail}
+            </span>
+          )
+        )}
+      </div>
+
       <Card>
         {error ? <Empty text={error} /> : rows.length === 0 ? <Empty text="No audit entries yet." /> : (
           <div className="overflow-x-auto">

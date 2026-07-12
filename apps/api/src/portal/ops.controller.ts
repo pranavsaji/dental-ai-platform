@@ -3,6 +3,7 @@ import {
 } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
+import { ALL_ROLES, assertRole } from "../auth/roles";
 import { PortalService } from "./portal.service";
 import { AnalyticsService } from "./analytics.service";
 import { AuditService } from "../audit.service";
@@ -28,6 +29,7 @@ export class OpsController {
 
   @Post("recall-campaign")
   async recallCampaign(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: campaign trigger — front desk's job
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `recall-${loc.key}-${randomUUID().slice(0, 8)}`;
     await this.temporal.startWorkflow("recallCampaign", workflowId, {
@@ -42,6 +44,7 @@ export class OpsController {
 
   @Post("claim-followup")
   async claimFollowUp(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: billing ops — all in-location roles
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `claimfu-${loc.key}-${randomUUID().slice(0, 8)}`;
     await this.temporal.startWorkflow("claimFollowUp", workflowId, {
@@ -59,6 +62,7 @@ export class OpsController {
   // C1: manual huddle trigger (the cron fires at 06:00; demos shouldn't wait).
   @Post("huddle")
   async runHuddle(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: read-only workflow — all roles
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `huddle-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {
@@ -96,6 +100,7 @@ export class OpsController {
     @Query("locationId") locationId?: string,
     @Query("date") date?: string
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: staff-facing send to self — all roles
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const digest = await this.portal.huddleDigest(loc.id, date);
     if (!digest) throw new BadRequestException("No huddle digest for that date — generate one first");
@@ -118,6 +123,7 @@ export class OpsController {
   // C2: manual reminder sweep (the cron fires at 16:00 for T+1).
   @Post("reminder-sweep")
   async reminderSweep(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: campaign trigger — front desk's job
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `remind-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {
@@ -137,6 +143,7 @@ export class OpsController {
   // C5: manual unscheduled-treatment outreach (the cron fires at 07:00).
   @Post("treatment-outreach")
   async treatmentOutreach(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertRole(user, ...ALL_ROLES); // G4: campaign trigger — front desk's job
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `outreach-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {
@@ -164,8 +171,13 @@ export class OpsController {
     @Query("locationId") locationId?: string,
     @Query("days") days?: string
   ) {
-    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const n = Math.max(1, Math.min(90, Number(days) || 1));
+    // G4: a multi-day backfill overwrites metric history (incl. the synthetic
+    // bootstrap rows) — that's config-destructive, so admin only. The 1-day
+    // recompute is the nightly cron's job and stays open to all roles.
+    if (n > 1) assertRole(user, "admin");
+    else assertRole(user, ...ALL_ROLES);
+    const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `metrics-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {
       await this.temporal.startWorkflow("metricsRollup", workflowId, {
@@ -191,6 +203,8 @@ export class OpsController {
     @CurrentUser() user: SessionUser,
     @Body() body: { question?: string; windowDays?: number }
   ) {
+    // G4: org-wide read — insightWindows applies assertOrgWide; stated here
+    // for grep-ability. No per-role gate beyond that.
     if (!body.question?.trim()) throw new BadRequestException("question required");
     const windows = await this.analytics.insightWindows(user, body.windowDays ?? 7);
     const result = await this.agents.draftInsights({
@@ -217,6 +231,7 @@ export class OpsController {
     @Param("locationId", ParseIntPipe) locationId: number,
     @Param("patientSourceId", ParseIntPipe) patientSourceId: number
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: clinical read (audited) — all roles
     const loc = await this.portal.resolveLocation(user, locationId);
     // Make sure this location's notes are embedded, then summarize.
     await fetch(`${AGENTS_URL()}/clinical/embed?locationId=${loc.id}`, { method: "POST" })
@@ -241,6 +256,7 @@ export class OpsController {
     @CurrentUser() user: SessionUser,
     @Body() body: { locationId?: number; query?: string }
   ) {
+    assertRole(user, ...ALL_ROLES); // G4: clinical read (audited) — all roles
     if (!body.query?.trim()) throw new BadRequestException("query required");
     const loc = await this.portal.resolveLocation(user, body.locationId);
     await fetch(`${AGENTS_URL()}/clinical/embed?locationId=${loc.id}`, { method: "POST" })

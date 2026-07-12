@@ -1,8 +1,8 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, desc, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, lte, notInArray, sql } from "drizzle-orm";
 import {
   appointments, claimDenials, claims, commLogs, eligibilityChecks, insPlans,
-  patients, preauths, procedureCodes, procedures
+  patients, payments, preauths, procedureCodes, procedures
 } from "@dental/db";
 import { DB, type Db } from "../db";
 
@@ -287,6 +287,78 @@ export class BillingService {
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 100);
+  }
+
+  /**
+   * Payments ledger (G3): the direct read surface for the 13th synced entity.
+   * A ledger, not analytics — rows by payDate with patient context, plus a
+   * summary that reconciles to D1's collections definition for the same range
+   * (sum of payment.amount by pay_date — exactly what rollupDay gathers).
+   */
+  async listPayments(locationId: number, days: number, type?: "insurance" | "patient") {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    // Upper bound at today: the seeded practice pays some claims on future
+    // dates — a "last N days" ledger must not show August in July.
+    const until = new Date().toISOString().slice(0, 10);
+    const scope = [
+      eq(payments.locationId, locationId),
+      gte(payments.payDate, since),
+      lte(payments.payDate, until)
+    ];
+    // Sim payType convention (A3/A4): 1 check, 2 card, 3 cash, 4 insurance EFT.
+    if (type === "insurance") scope.push(eq(payments.payType, 4));
+    if (type === "patient") scope.push(sql`${payments.payType} <> 4`);
+
+    const rows = await this.db
+      .select({
+        sourceId: payments.sourceId,
+        patientSourceId: payments.patientSourceId,
+        patientFirst: patients.firstName,
+        patientLast: patients.lastName,
+        payDate: payments.payDate,
+        amount: payments.amount,
+        payType: payments.payType,
+        note: payments.note
+      })
+      .from(payments)
+      .leftJoin(patients, and(
+        eq(patients.locationId, payments.locationId),
+        eq(patients.sourceId, payments.patientSourceId)))
+      .where(and(...scope))
+      .orderBy(desc(payments.payDate), desc(payments.sourceId))
+      .limit(500);
+
+    // Aggregate over the FULL range (rows above are display-capped at 500) so
+    // the summary always reconciles with daily_location_metrics.collections.
+    const [agg] = await this.db
+      .select({
+        count: sql<number>`count(*)::int`,
+        insuranceTotal: sql<number>`coalesce(sum(${payments.amount}) filter (where ${payments.payType} = 4), 0)::float`,
+        patientTotal: sql<number>`coalesce(sum(${payments.amount}) filter (where ${payments.payType} <> 4), 0)::float`
+      })
+      .from(payments)
+      .where(and(...scope));
+
+    return {
+      since,
+      days,
+      summary: {
+        count: agg?.count ?? 0,
+        total: Math.round(((agg?.insuranceTotal ?? 0) + (agg?.patientTotal ?? 0)) * 100) / 100,
+        insuranceTotal: Math.round((agg?.insuranceTotal ?? 0) * 100) / 100,
+        patientTotal: Math.round((agg?.patientTotal ?? 0) * 100) / 100
+      },
+      payments: rows.map((r) => ({
+        sourceId: r.sourceId,
+        patientSourceId: r.patientSourceId,
+        patientName: `${r.patientFirst ?? ""} ${r.patientLast ?? ""}`.trim() || `Patient ${r.patientSourceId}`,
+        payDate: r.payDate,
+        amount: r.amount,
+        type: r.payType === 4 ? "insurance" : "patient",
+        source: r.payType === 4 ? "insurance EFT" : r.payType === 1 ? "check" : r.payType === 2 ? "card" : r.payType === 3 ? "cash" : `type ${r.payType}`,
+        note: r.note
+      }))
+    };
   }
 
   /**

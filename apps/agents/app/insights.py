@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from .config import llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 
@@ -93,6 +94,11 @@ def draft_insights(req: InsightsRequest) -> InsightsResponse:
     if not llm_available():
         return _fallback(req)
     try:
+        # G5: the payload is location metrics (no patient identifiers), but
+        # every LLM call goes through the scrubber — the invariant holds
+        # without a documented exception; pattern classes (phones/emails in
+        # the owner's free-text question) are still caught.
+        deid = Deidentifier()
         result = invoke_structured(_Insight, [
             SystemMessage(content=(
                 "You are the owner-insights agent for a multi-location dental group. "
@@ -108,7 +114,7 @@ def draft_insights(req: InsightsRequest) -> InsightsResponse:
                 "answer. Larger |z| means a more unusual move."
             )),
             HumanMessage(content=req.model_dump_json()),
-        ])
+        ], deid=deid)
         return InsightsResponse(
             answer=result.answer, highlights=result.highlights[:5], usedLlm=True
         )

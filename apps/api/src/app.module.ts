@@ -23,6 +23,7 @@ import { OpsController } from "./portal/ops.controller";
 import { TasksController } from "./portal/tasks.controller";
 import { TasksService } from "./portal/tasks.service";
 import { AdminUsersController } from "./portal/admin-users.controller";
+import { AdminLocationsController } from "./portal/admin-locations.controller";
 import { EventsController } from "./portal/events.controller";
 import { EventsService } from "./portal/events.service";
 import { BillingController } from "./portal/billing.controller";
@@ -40,7 +41,7 @@ import { TemporalService } from "./temporal/temporal.service";
     AuthController, MfaController, SsoController, TwilioController,
     EdgeController, PortalController, ActionsController, OpsController,
     TasksController, BillingController, AnalyticsController,
-    AdminUsersController, EventsController
+    AdminUsersController, AdminLocationsController, EventsController
   ],
   providers: [
     dbProvider,

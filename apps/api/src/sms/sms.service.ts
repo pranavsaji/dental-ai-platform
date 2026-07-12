@@ -14,7 +14,7 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { and, eq, gte, inArray, notLike, sql } from "drizzle-orm";
 import twilio from "twilio";
-import { patientContactPrefs, patients, smsMessages } from "@dental/db";
+import { locations, patientContactPrefs, patients, smsMessages } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { normalizePhone } from "./phone";
@@ -179,7 +179,9 @@ export class SmsService {
         eq(patientContactPrefs.locationId, locationId),
         eq(patientContactPrefs.patientSourceId, patientSourceId)
       ));
-    const timezone = prefs?.timezone ?? "America/Chicago";
+    // G1: a patient without a prefs row lives on the practice's clock — quiet
+    // hours follow the location timezone set in /admin/locations.
+    const timezone = prefs?.timezone ?? (await this.locationTimezone(locationId));
     const { today, week } = await this.outboundCounts(locationId, patientSourceId, now, timezone);
     return evaluateMessagePolicy({
       kind,
@@ -190,6 +192,12 @@ export class SmsService {
       sentToday: today,
       sentThisWeek: week
     });
+  }
+
+  private async locationTimezone(locationId: number): Promise<string> {
+    const [loc] = await this.db.select({ timezone: locations.timezone })
+      .from(locations).where(eq(locations.id, locationId));
+    return loc?.timezone ?? "America/Chicago";
   }
 
   /** Outbound rows that count against the caps: everything except blocked_* (queued rows will send). */

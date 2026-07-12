@@ -80,6 +80,23 @@ interface UnscheduledRow {
   score: number;
 }
 
+// G3: payments ledger payload — GET /portal/billing/payments.
+interface PaymentsPayload {
+  since: string;
+  days: number;
+  summary: { count: number; total: number; insuranceTotal: number; patientTotal: number };
+  payments: Array<{
+    sourceId: number;
+    patientSourceId: number;
+    patientName: string;
+    payDate: string | null;
+    amount: number;
+    type: "insurance" | "patient";
+    source: string;
+    note: string;
+  }>;
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   missing_documentation: "Missing documentation",
   frequency: "Frequency",
@@ -106,6 +123,9 @@ export default function BillingPage() {
   const [preauthRows, setPreauthRows] = useState<PreauthRow[]>([]);
   const [exceptions, setExceptions] = useState<EligRow[]>([]);
   const [unscheduled, setUnscheduled] = useState<UnscheduledRow[]>([]);
+  const [ledger, setLedger] = useState<PaymentsPayload | null>(null);
+  const [payDays, setPayDays] = useState(30);
+  const [payType, setPayType] = useState("");
   const [bucket, setBucket] = useState("");
   const [sort, setSort] = useState("priority");
   const [busy, setBusy] = useState<string | null>(null);
@@ -135,7 +155,10 @@ export default function BillingPage() {
       .then((rows) => setExceptions(rows.filter((r) => r.status !== "verified")))
       .catch(() => {});
     api<UnscheduledRow[]>(`/portal/billing/unscheduled?${loc}`).then(setUnscheduled).catch(() => {});
-  }, [location, bucket, sort]);
+    const payParams = new URLSearchParams({ locationId: String(location.id), days: String(payDays) });
+    if (payType) payParams.set("type", payType);
+    api<PaymentsPayload>(`/portal/billing/payments?${payParams}`).then(setLedger).catch(() => {});
+  }, [location, bucket, sort, payDays, payType]);
 
   useEffect(() => {
     load();
@@ -331,6 +354,79 @@ export default function BillingPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </Card>
+
+      {/* Payments ledger (G3) — a ledger, not analytics; trends live on /analytics */}
+      <Card
+        title="Payments"
+        className="rise rise-3 mb-6"
+        action={
+          <div className="flex items-center gap-2 text-xs">
+            <select
+              className="rounded-md border border-line bg-surface px-2 py-1 text-xs outline-none focus:border-teal"
+              value={payType} onChange={(e) => setPayType(e.target.value)}
+            >
+              <option value="">All payments</option>
+              <option value="insurance">Insurance EFT</option>
+              <option value="patient">Patient</option>
+            </select>
+            <select
+              className="rounded-md border border-line bg-surface px-2 py-1 text-xs outline-none focus:border-teal"
+              value={payDays} onChange={(e) => setPayDays(Number(e.target.value))}
+            >
+              <option value={7}>Last 7 days</option>
+              <option value={30}>Last 30 days</option>
+              <option value={90}>Last 90 days</option>
+            </select>
+          </div>
+        }
+      >
+        {!ledger || ledger.payments.length === 0 ? (
+          <Empty text="No payments in this range. Insurance EFTs and patient payments sync from the PMS and land here." />
+        ) : (
+          <>
+            <div className="border-b border-line/50 px-5 py-2.5 text-xs text-ink-soft">
+              <span className="font-semibold text-ink">{fmtMoney(ledger.summary.total)}</span> collected
+              since {fmtDate(ledger.since)} across <span className="num">{ledger.summary.count}</span> payments
+              — insurance {fmtMoney(ledger.summary.insuranceTotal)}, patient {fmtMoney(ledger.summary.patientTotal)}.
+              Matches the collections number Analytics rolls up for the same dates.
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-line/70">
+                    <Th>Date</Th><Th>Patient</Th><Th>Amount</Th><Th>Type</Th><Th>Source</Th><Th>Note</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line/50">
+                  {ledger.payments.slice(0, 20).map((p) => (
+                    <tr key={p.sourceId} className="hover:bg-mint/25">
+                      <Td className="text-ink-soft">{fmtDate(p.payDate)}</Td>
+                      <Td>
+                        <Link href={`/patients/${location!.id}/${p.patientSourceId}`} className="font-medium hover:text-teal">
+                          {p.patientName}
+                        </Link>
+                      </Td>
+                      <Td className="num">{fmtMoney(p.amount)}</Td>
+                      <Td>
+                        <span className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                          p.type === "insurance" ? "bg-mint text-pine" : "bg-line/70 text-ink-soft"
+                        }`}>{p.type}</span>
+                      </Td>
+                      <Td className="text-ink-soft">{p.source}</Td>
+                      <Td className="max-w-xs truncate text-xs text-ink-faint">{p.note}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {ledger.payments.length > 20 && (
+                <div className="px-5 py-2 text-[11px] text-ink-faint">
+                  Showing 20 of {ledger.summary.count} — totals above cover the full range.
+                </div>
+              )}
+            </div>
+          </>
         )}
       </Card>
 
