@@ -267,4 +267,10 @@ export interface ActivitiesInterface {
   rollupDailyMetrics(input: {
     orgId: number; locationId: number; days: number; workflowId: string;
   }): Promise<{ days: number; from: string; to: string }>;
+
+  // --- F2: audit-chain verification ------------------------------------------------------
+  /** Recomputes the audit hash chain; broken ⇒ urgent task + audit entry. */
+  verifyAuditChain(input: {
+    orgId: number; workflowId: string;
+  }): Promise<{ ok: boolean; checked: number; brokenAtId: number | null }>;
 }

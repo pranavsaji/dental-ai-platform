@@ -1,8 +1,9 @@
 "use client";
 
-// SSO landing page. The API's /auth/sso/callback redirects here with the
-// session JWT in the URL fragment (fragments never reach server logs). We
-// validate it against /auth/me, persist the session, and enter the app.
+// SSO landing page. F2: the API's /auth/sso/callback sets the httpOnly
+// session cookies itself and redirects here with a bare #sso=ok marker — no
+// token ever appears in a URL. We confirm the cookie works via /auth/me,
+// persist the (non-sensitive) profile for the shell, and enter the app.
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -11,6 +12,7 @@ import { API_URL, setSession, type SessionUser } from "@/lib/api";
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: "SSO is not configured on this server.",
   no_account: "No account matches your SSO identity. Ask an admin to invite you.",
+  account_disabled: "Your account has been disabled. Contact an administrator.",
   domain_not_allowed: "Your email domain is not allowed for this organization.",
   email_unverified: "Your identity provider reports this email as unverified.",
   idp_unreachable: "Could not reach the identity provider.",
@@ -25,24 +27,23 @@ export default function SsoLandingPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
-    window.history.replaceState(null, "", "/login/sso"); // scrub token from the URL bar
+    window.history.replaceState(null, "", "/login/sso"); // scrub the fragment
     const err = params.get("error");
     if (err) {
       setError(ERROR_MESSAGES[err] ?? `Sign-in failed (${err}).`);
       return;
     }
-    const token = params.get("token");
-    if (!token) {
-      setError("Missing sign-in token. Please start over.");
+    if (params.get("sso") !== "ok") {
+      setError("Missing sign-in confirmation. Please start over.");
       return;
     }
-    fetch(`${API_URL}/auth/me`, { headers: { authorization: `Bearer ${token}` } })
+    fetch(`${API_URL}/auth/me`, { credentials: "include" })
       .then((r) => {
-        if (!r.ok) throw new Error("invalid token");
+        if (!r.ok) throw new Error("invalid session");
         return r.json() as Promise<SessionUser>;
       })
       .then((user) => {
-        setSession(token, user);
+        setSession(user);
         router.replace("/");
       })
       .catch(() => setError("Sign-in could not be verified. Please try again."));

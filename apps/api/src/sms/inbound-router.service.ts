@@ -5,6 +5,7 @@ import { DB, type Db } from "../db";
 import { TemporalService } from "../temporal/temporal.service";
 import { AgentsClient } from "../temporal/agents.client";
 import { TasksService } from "../portal/tasks.service";
+import { EventsService } from "../portal/events.service";
 import { SmsService } from "./sms.service";
 import { isOptOutMessage } from "./policy";
 
@@ -28,7 +29,8 @@ export class InboundRouterService {
     private temporal: TemporalService,
     private agents: AgentsClient,
     private tasks: TasksService,
-    private sms: SmsService
+    private sms: SmsService,
+    private events: EventsService
   ) {}
 
   async route(input: {
@@ -40,6 +42,15 @@ export class InboundRouterService {
     lastWorkflowId: string | null;
   }): Promise<{ routedTo: string | null; startedReschedule: boolean; optedOut?: boolean; taskId?: number }> {
     const text = input.body.trim();
+
+    // F1: every inbound text pings the bell (both entry points — console
+    // simulator and Twilio webhook — funnel through here).
+    await this.events.publish({
+      orgId: input.orgId, locationId: input.locationId, type: "sms.received",
+      title: `Text from patient ${input.patientSourceId}`,
+      body: text.length > 120 ? `${text.slice(0, 117)}…` : text,
+      resourceType: "patient", resourceId: String(input.patientSourceId)
+    });
 
     // 1. E1: STOP is terminal — record the sticky opt-out and route nowhere.
     if (isOptOutMessage(text)) {

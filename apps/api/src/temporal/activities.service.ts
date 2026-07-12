@@ -12,6 +12,7 @@ import { CommandsService } from "../edge/commands.service";
 import { CLEARINGHOUSE, type ClearinghousePort } from "../clearinghouse";
 import { MetricsService } from "../portal/metrics.service";
 import { TasksService } from "../portal/tasks.service";
+import { EventsService } from "../portal/events.service";
 import { SmsService } from "../sms/sms.service";
 import { EmailService } from "../email/email.service";
 import { appealSentNotice, recallLetter } from "../email/templates";
@@ -39,8 +40,22 @@ export class ActivitiesService implements ActivitiesInterface {
     private sms: SmsService,
     private email: EmailService,
     private agents: AgentsClient,
-    private metrics: MetricsService
+    private metrics: MetricsService,
+    private events: EventsService
   ) {}
+
+  // F1: every approval card pings the notification bell the moment it lands.
+  private async notifyApprovalCard(
+    scope: { orgId: number; locationId: number },
+    actionId: number | null, type: string, summary: string
+  ): Promise<void> {
+    await this.events.publish({
+      orgId: scope.orgId, locationId: scope.locationId, type: "approval.created",
+      title: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
+      body: type.replace(/_/g, " "),
+      resourceType: "proposed_action", resourceId: actionId != null ? String(actionId) : null
+    });
+  }
 
   // --- tasks (A5) ---------------------------------------------------------------
 
@@ -175,6 +190,8 @@ export class ActivitiesService implements ActivitiesInterface {
       resource: "proposed_action", resourceId: String(action.id),
       purpose: `slot backfill for broken appointment ${input.appointmentSourceId}`
     });
+    await this.notifyApprovalCard(input, action.id, "backfill_outreach",
+      `Backfill the ${when} slot: text ${chosen.name} (cascade of ${cascade.length})`);
 
     return { actionId: action.id, candidates: cascade };
   }
@@ -384,6 +401,8 @@ export class ActivitiesService implements ActivitiesInterface {
       actor: "agent:billing", action: "agent.proposed.claim_followup",
       resource: "claim", resourceId: String(chosen.claimSourceId), purpose: "revenue cycle"
     });
+    await this.notifyApprovalCard(input, action.id, "claim_followup",
+      `Chase the ${chosen.carrierName} claim for ${chosen.patientName} ($${chosen.claimFee.toFixed(0)})`);
     return {
       actionId: action.id,
       claimSourceId: chosen.claimSourceId,
@@ -528,6 +547,8 @@ export class ActivitiesService implements ActivitiesInterface {
       actor: "agent:scheduling", action: "agent.proposed.recall_campaign",
       resource: "recall", resourceId: `${recipients.length} patients`, purpose: "reactivation"
     });
+    await this.notifyApprovalCard(input, action.id, "recall_campaign",
+      `Reactivation sweep: text ${recipients.length} patients overdue for recall`);
     return { actionId: action.id, recipients };
   }
 
@@ -856,6 +877,8 @@ export class ActivitiesService implements ActivitiesInterface {
       resource: "preauth", resourceId: String(row.id),
       purpose: `${c.procCode} for patient ${c.patientSourceId}`
     });
+    await this.notifyApprovalCard(input, action.id, "preauth_submission",
+      `Pre-auth to ${c.carrierName} for ${c.patientName}: ${c.procCode} ($${c.fee.toFixed(0)})`);
     return { preauthId: row.id, actionId: action.id, narrative: draft.narrative };
   }
 
@@ -1094,6 +1117,8 @@ export class ActivitiesService implements ActivitiesInterface {
       actor: "agent:billing", action: "agent.proposed.claim_appeal",
       resource: "claim", resourceId: String(input.claimSourceId), purpose: denial.category
     });
+    await this.notifyApprovalCard(input, action.id, "claim_appeal",
+      `Appeal denied claim ${input.claimSourceId} (${denial.category.replace(/_/g, " ")})`);
     return { actionId: action.id, letter: denial.appealLetter };
   }
 
@@ -1423,6 +1448,8 @@ export class ActivitiesService implements ActivitiesInterface {
       resource: "proposed_action", resourceId: String(action.id),
       purpose: `${recipients.length} patients, $${value.toFixed(0)} at stake`
     });
+    await this.notifyApprovalCard(input, action.id, "treatment_outreach",
+      `Treatment outreach: ${recipients.length} patients, $${value.toFixed(0)} at stake`);
     return { actionId: action.id, recipients };
   }
 
@@ -1533,6 +1560,8 @@ export class ActivitiesService implements ActivitiesInterface {
       resource: "proposed_action", resourceId: String(action.id),
       purpose: `${input.recipients.length} unconfirmed appointments tomorrow`
     });
+    await this.notifyApprovalCard(input, action.id, "reminder_batch",
+      `Reminder batch: ${input.recipients.length} unconfirmed appointments tomorrow`);
     return { actionId: action.id };
   }
 
@@ -1935,6 +1964,12 @@ export class ActivitiesService implements ActivitiesInterface {
       actor: "agent:huddle", action: "huddle.ready", resource: "huddle_digest",
       resourceId: dateStr, purpose: `${todays.length} appointments, ${draft.actions.length} action items`
     });
+    await this.events.publish({
+      orgId: input.orgId, locationId: input.locationId, type: "huddle.ready",
+      title: `Morning huddle digest ready for ${dateStr}`,
+      body: `${todays.length} appointments · ${draft.actions.length} action items`,
+      resourceType: "huddle_digest", resourceId: dateStr
+    });
     return { date: dateStr, actionCount: draft.actions.length, usedLlm: draft.usedLlm };
   }
 
@@ -1951,5 +1986,38 @@ export class ActivitiesService implements ActivitiesInterface {
       purpose: `${res.days} day(s) recomputed from canonical tables (${input.workflowId})`
     });
     return res;
+  }
+
+  // --- F2: audit-chain verification -----------------------------------------------------
+
+  async verifyAuditChain(input: {
+    orgId: number; workflowId: string;
+  }): Promise<{ ok: boolean; checked: number; brokenAtId: number | null }> {
+    const res = await this.audit.verifyChain();
+    await this.audit.log({
+      orgId: input.orgId, actorType: "system",
+      actor: "workflow:auditChainVerify",
+      action: res.ok ? "audit.chain.verified" : "audit.chain.broken",
+      resource: "audit_log",
+      resourceId: res.anchor ? String(res.anchor.id) : "",
+      purpose: `${res.detail}${res.anchor ? `; anchor ${res.anchor.entryHash}` : ""} (${input.workflowId})`
+    });
+    if (!res.ok) {
+      this.log.error(`audit chain BROKEN: ${res.detail}`);
+      // A broken chain is a security incident, not a log line: put it in
+      // front of a human. First location = the org's home queue.
+      const [loc] = await this.db.select().from(locations)
+        .where(eq(locations.orgId, input.orgId)).limit(1);
+      if (loc) {
+        await this.tasks.create({
+          orgId: input.orgId, locationId: loc.id, type: "manual",
+          title: "Audit log integrity check FAILED",
+          body: `${res.detail}. Investigate immediately — the audit trail may have been tampered with.`,
+          priority: "urgent", assigneeRole: "admin",
+          createdBy: "workflow:auditChainVerify", workflowId: input.workflowId
+        });
+      }
+    }
+    return { ok: res.ok, checked: res.checked, brokenAtId: res.brokenAtId };
   }
 }

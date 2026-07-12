@@ -92,7 +92,93 @@ services:
     ports:
       - "8233:8080"
 
+  # --- F2: full-stack-in-docker (compose profile `apps`) ---------------------
+  # Default workflow stays host-run (`pnpm dev`) for fast iteration; this
+  # profile proves the app images end-to-end and is the F4 prereq:
+  #   docker compose --profile apps up --build
+  # Push/bootstrap/seed the dockerized Postgres first, same as the host flow.
+  api:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      PLATFORM_DATABASE_URL: postgres://dental:dental@postgres:5432/dental
+      TEMPORAL_ADDRESS: temporal:7233
+      AGENTS_URL: http://agents:8100
+      WEB_URL: http://localhost:3000
+      API_PORT: "4100"
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      EDGE_SITE_A_API_KEY: ${EDGE_SITE_A_API_KEY:-edge-key-site-a-dev}
+      EDGE_SITE_B_API_KEY: ${EDGE_SITE_B_API_KEY:-edge-key-site-b-dev}
+    ports:
+      - "4100:4100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  web:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4100
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  agents:
+    profiles: ["apps"]
+    build:
+      context: apps/agents
+    environment:
+      PLATFORM_DATABASE_URL: postgres://dental:dental@postgres:5432/dental
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Edges in embedded-simulator mode — no MySQL dependency, pure demo/CI shape.
+  edge-a:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/edge-sync/Dockerfile
+    environment:
+      EDGE_SITE: a
+      PMS_MODE: mock
+      API_URL: http://api:4100
+      EDGE_SITE_A_API_KEY: ${EDGE_SITE_A_API_KEY:-edge-key-site-a-dev}
+    volumes:
+      - edge_a_state:/repo/edge-sync-state
+    depends_on:
+      - api
+
+  edge-b:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: apps/edge-sync/Dockerfile
+    environment:
+      EDGE_SITE: b
+      PMS_MODE: mock
+      API_URL: http://api:4100
+      EDGE_SITE_B_API_KEY: ${EDGE_SITE_B_API_KEY:-edge-key-site-b-dev}
+    volumes:
+      - edge_b_state:/repo/edge-sync-state
+    depends_on:
+      - api
+
 volumes:
   opendental_a_data:
   opendental_b_data:
   postgres_data:
+  edge_a_state:
+  edge_b_state:

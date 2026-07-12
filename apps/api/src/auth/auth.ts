@@ -1,37 +1,80 @@
 import {
   Body, CanActivate, Controller, ExecutionContext, Get, HttpException, Inject,
-  Injectable, Post, Req, UnauthorizedException, UseGuards, createParamDecorator
+  Injectable, Post, Req, Res, UnauthorizedException, UseGuards, createParamDecorator
 } from "@nestjs/common";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { eq } from "drizzle-orm";
 import { users, scryptVerify } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
+import {
+  CSRF_COOKIE, JWT_SECRET, SESSION_COOKIE, clearSessionCookies, issueSession,
+  readCookie, type SessionUser
+} from "./session";
+import { mfaEnforcedForAdmins, signMfaToken } from "./mfa";
 
-const JWT_SECRET = () => process.env.JWT_SECRET ?? "dev-jwt-secret-change-me";
+export type { SessionUser };
 
-export interface SessionUser {
-  sub: number;
-  orgId: number;
-  email: string;
-  name: string;
-  role: string; // admin | provider | staff
-  locationId: number | null; // null = all locations in org
+// F2: sessions ride an httpOnly cookie (see session.ts); Bearer stays for
+// scripts. Cookie-authenticated mutations must pass the CSRF double-submit
+// check, and every request re-checks users.disabled_at (30s cache) so
+// disabling an account revokes access immediately (F3), not at token expiry.
+const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const disabledCache = new Map<number, { disabled: boolean; checkedAt: number }>();
+const DISABLED_CACHE_MS = 30_000;
+
+/** F3: called on disable/enable so revocation is immediate, not cache-delayed. */
+export function invalidateDisabledCache(userId: number): void {
+  disabledCache.delete(userId);
 }
 
 @Injectable()
 export class JwtGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
+  constructor(@Inject(DB) private db: Db) {}
+
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest();
     const header: string | undefined = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) throw new UnauthorizedException("Missing bearer token");
+    const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
+    const cookieToken = bearer ? null : readCookie(req, SESSION_COOKIE);
+    const token = bearer ?? cookieToken;
+    if (!token) throw new UnauthorizedException("Missing credentials");
+
+    let user: SessionUser;
     try {
-      req.user = jwt.verify(header.slice(7), JWT_SECRET()) as unknown as SessionUser;
-      return true;
+      user = jwt.verify(token, JWT_SECRET()) as unknown as SessionUser;
     } catch {
       throw new UnauthorizedException("Invalid token");
     }
+
+    // CSRF double-submit — only for cookie-authenticated mutations. A cross-
+    // site form can make the browser send the cookie but cannot set headers.
+    if (cookieToken && MUTATING.has(req.method)) {
+      const headerToken = req.headers["x-csrf-token"];
+      if (!user.csrf || headerToken !== user.csrf) {
+        throw new UnauthorizedException("CSRF token missing or invalid");
+      }
+    }
+
+    if (await this.isDisabled(user.sub)) {
+      throw new UnauthorizedException("Account disabled");
+    }
+
+    req.user = user;
+    return true;
+  }
+
+  private async isDisabled(userId: number): Promise<boolean> {
+    const cached = disabledCache.get(userId);
+    if (cached && Date.now() - cached.checkedAt < DISABLED_CACHE_MS) return cached.disabled;
+    const [row] = await this.db
+      .select({ disabledAt: users.disabledAt })
+      .from(users)
+      .where(eq(users.id, userId));
+    const disabled = !row || row.disabledAt != null;
+    disabledCache.set(userId, { disabled, checkedAt: Date.now() });
+    return disabled;
   }
 }
 
@@ -64,7 +107,11 @@ export class AuthController {
   ) {}
 
   @Post("login")
-  async login(@Req() req: Request, @Body() body: { email?: string; password?: string }) {
+  async login(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() body: { email?: string; password?: string }
+  ) {
     const email = (body.email ?? "").toLowerCase().trim();
     if (loginRateLimited(`${req.ip}`)) {
       throw new HttpException("Too many login attempts; try again in a few minutes", 429);
@@ -80,7 +127,24 @@ export class AuthController {
       }
       throw new UnauthorizedException("Invalid credentials");
     }
-    const session: SessionUser = {
+    if (user.disabledAt) {
+      await this.audit.log({
+        orgId: user.orgId, actorType: "user", actor: email,
+        action: "auth.login.disabled", resource: "session"
+      });
+      throw new UnauthorizedException("Account disabled");
+    }
+
+    // F2 MFA gates: an enrolled user must present a TOTP code; an admin who
+    // hasn't enrolled must set MFA up at login when enforcement is on.
+    if (user.mfaEnrolledAt) {
+      return { mfaRequired: true, mfaToken: signMfaToken(user.id, "mfa") };
+    }
+    if (user.role === "admin" && mfaEnforcedForAdmins()) {
+      return { mfaSetupRequired: true, mfaToken: signMfaToken(user.id, "mfa_setup") };
+    }
+
+    const session = {
       sub: user.id,
       orgId: user.orgId,
       email: user.email,
@@ -92,15 +156,29 @@ export class AuthController {
       orgId: user.orgId, actorType: "user", actor: user.email,
       action: "auth.login", resource: "session"
     });
-    return {
-      token: jwt.sign(session, JWT_SECRET(), { expiresIn: "12h" }),
-      user: session
-    };
+    const token = issueSession(res, session);
+    // token still returned for non-browser clients (Bearer); the web app
+    // ignores it and relies on the httpOnly cookie.
+    return { token, user: session };
+  }
+
+  @Post("logout")
+  logout(@Res({ passthrough: true }) res: Response) {
+    clearSessionCookies(res);
+    return { ok: true };
   }
 
   @Get("me")
   @UseGuards(JwtGuard)
   me(@CurrentUser() user: SessionUser) {
     return user;
+  }
+
+  // The web app reads the CSRF value from its (non-httpOnly) cookie; this
+  // endpoint exists for clients that lost it (e.g. cookie cleared mid-session).
+  @Get("csrf")
+  @UseGuards(JwtGuard)
+  csrf(@CurrentUser() user: SessionUser, @Req() req: Request) {
+    return { csrf: user.csrf ?? readCookie(req, CSRF_COOKIE) ?? null };
   }
 }

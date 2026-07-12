@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+.tmp
+edge-sync-state
+.env
+credentials.json
+token.json
+.git
+infra
+compliance
+*.md
+!README.md
+apps/agents/.venv
+**/__pycache__

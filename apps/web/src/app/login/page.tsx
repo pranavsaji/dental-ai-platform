@@ -1,13 +1,38 @@
 "use client";
 
+// Login. F2: the API answers a password login one of three ways —
+//   {user}                      → session cookie set, enter the app
+//   {mfaRequired, mfaToken}     → ask for the 6-digit TOTP (or recovery) code
+//   {mfaSetupRequired, mfaToken}→ enforced admin without MFA: enroll inline
+//                                 (QR → confirm code → recovery codes) and
+//                                 continue into a session.
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { API_URL, api, setSession, type SessionUser } from "@/lib/api";
+
+type LoginResponse =
+  | { user: SessionUser; token?: string }
+  | { mfaRequired: true; mfaToken: string }
+  | { mfaSetupRequired: true; mfaToken: string };
+
+type Step =
+  | { kind: "credentials" }
+  | { kind: "mfa_code"; mfaToken: string }
+  | { kind: "mfa_setup"; mfaToken: string; qrDataUrl: string; secret: string }
+  | { kind: "recovery_codes"; codes: string[] };
+
+const inputCls =
+  "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-teal";
+const buttonCls =
+  "w-full rounded-md bg-pine py-2.5 text-sm font-semibold text-white transition hover:bg-pine-2 disabled:opacity-60";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("admin@dental.dev");
   const [password, setPassword] = useState("dental-demo");
+  const [code, setCode] = useState("");
+  const [step, setStep] = useState<Step>({ kind: "credentials" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sso, setSso] = useState<{ enabled: boolean; providerName: string } | null>(null);
@@ -19,19 +44,70 @@ export default function LoginPage() {
       .catch(() => setSso(null));
   }, []);
 
-  async function submit(e: React.FormEvent) {
+  function enter(user: SessionUser) {
+    setSession(user);
+    router.replace("/");
+  }
+
+  async function submitCredentials(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const res = await api<{ token: string; user: SessionUser }>("/auth/login", {
+      const res = await api<LoginResponse>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password })
       });
-      setSession(res.token, res.user);
-      router.replace("/");
+      if ("mfaRequired" in res) {
+        setStep({ kind: "mfa_code", mfaToken: res.mfaToken });
+      } else if ("mfaSetupRequired" in res) {
+        const setup = await api<{ qrDataUrl: string; secret: string }>("/auth/mfa/setup/start", {
+          method: "POST",
+          body: JSON.stringify({ mfaToken: res.mfaToken })
+        });
+        setStep({ kind: "mfa_setup", mfaToken: res.mfaToken, ...setup });
+      } else {
+        enter(res.user);
+      }
     } catch {
       setError("Invalid credentials. Try admin@dental.dev / dental-demo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitMfaCode(e: React.FormEvent) {
+    e.preventDefault();
+    if (step.kind !== "mfa_code") return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api<{ user: SessionUser }>("/auth/mfa/verify", {
+        method: "POST",
+        body: JSON.stringify({ mfaToken: step.mfaToken, code })
+      });
+      enter(res.user);
+    } catch {
+      setError("That code didn't match. Try again, or use a recovery code.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitMfaSetup(e: React.FormEvent) {
+    e.preventDefault();
+    if (step.kind !== "mfa_setup") return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api<{ recoveryCodes: string[]; user: SessionUser }>("/auth/mfa/setup/confirm", {
+        method: "POST",
+        body: JSON.stringify({ mfaToken: step.mfaToken, code })
+      });
+      setSession(res.user);
+      setStep({ kind: "recovery_codes", codes: res.recoveryCodes });
+    } catch {
+      setError("That code didn't match — rescan the QR and try again.");
     } finally {
       setBusy(false);
     }
@@ -52,53 +128,103 @@ export default function LoginPage() {
         <div className="mt-1 text-[11px] uppercase tracking-[0.24em] text-teal">
           The operating system for dentistry
         </div>
-        <form onSubmit={submit} className="mt-8 space-y-4">
-          <label className="block">
-            <span className="text-[11px] uppercase tracking-widest text-ink-faint">Email</span>
-            <input
-              className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-teal"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="username"
-            />
-          </label>
-          <label className="block">
-            <span className="text-[11px] uppercase tracking-widest text-ink-faint">Password</span>
-            <input
-              type="password"
-              className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-teal"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          {error && <div className="text-sm text-coral">{error}</div>}
-          <button
-            disabled={busy}
-            className="w-full rounded-md bg-pine py-2.5 text-sm font-semibold text-white transition hover:bg-pine-2 disabled:opacity-60"
-          >
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-        {sso?.enabled && (
+
+        {step.kind === "credentials" && (
           <>
-            <div className="mt-4 flex items-center gap-3 text-[10px] uppercase tracking-widest text-ink-faint">
-              <span className="h-px flex-1 bg-line" />
-              or
-              <span className="h-px flex-1 bg-line" />
+            <form onSubmit={submitCredentials} className="mt-8 space-y-4">
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-widest text-ink-faint">Email</span>
+                <input className={inputCls} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
+              </label>
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-widest text-ink-faint">Password</span>
+                <input type="password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+              </label>
+              {error && <div className="text-sm text-coral">{error}</div>}
+              <button disabled={busy} className={buttonCls}>{busy ? "Signing in…" : "Sign in"}</button>
+            </form>
+            {sso?.enabled && (
+              <>
+                <div className="mt-4 flex items-center gap-3 text-[10px] uppercase tracking-widest text-ink-faint">
+                  <span className="h-px flex-1 bg-line" />
+                  or
+                  <span className="h-px flex-1 bg-line" />
+                </div>
+                <a
+                  href={`${API_URL}/auth/sso/login`}
+                  className="mt-4 block w-full rounded-md border border-pine py-2.5 text-center text-sm font-semibold text-pine transition hover:bg-surface"
+                >
+                  Continue with {sso.providerName}
+                </a>
+              </>
+            )}
+            <div className="mt-6 border-t border-line pt-4 text-xs leading-relaxed text-ink-faint">
+              Demo users (password <span className="num">dental-demo</span>):<br />
+              admin@dental.dev · frontdesk@dental.dev · drpatel@dental.dev
             </div>
-            <a
-              href={`${API_URL}/auth/sso/login`}
-              className="mt-4 block w-full rounded-md border border-pine py-2.5 text-center text-sm font-semibold text-pine transition hover:bg-surface"
-            >
-              Continue with {sso.providerName}
-            </a>
           </>
         )}
-        <div className="mt-6 border-t border-line pt-4 text-xs leading-relaxed text-ink-faint">
-          Demo users (password <span className="num">dental-demo</span>):<br />
-          admin@dental.dev · frontdesk@dental.dev · drpatel@dental.dev
-        </div>
+
+        {step.kind === "mfa_code" && (
+          <form onSubmit={submitMfaCode} className="mt-8 space-y-4">
+            <div className="text-sm text-ink-soft">
+              Enter the 6-digit code from your authenticator app (or a recovery code).
+            </div>
+            <input
+              className={`${inputCls} num text-center text-lg tracking-[0.3em]`}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoFocus
+              autoComplete="one-time-code"
+              placeholder="123456"
+            />
+            {error && <div className="text-sm text-coral">{error}</div>}
+            <button disabled={busy || !code.trim()} className={buttonCls}>
+              {busy ? "Verifying…" : "Verify"}
+            </button>
+            <button type="button" className="w-full text-xs text-ink-faint underline" onClick={() => { setStep({ kind: "credentials" }); setCode(""); setError(""); }}>
+              Back to sign in
+            </button>
+          </form>
+        )}
+
+        {step.kind === "mfa_setup" && (
+          <form onSubmit={submitMfaSetup} className="mt-8 space-y-4">
+            <div className="text-sm text-ink-soft">
+              Your admin account requires two-factor authentication. Scan this QR
+              with an authenticator app, then enter the code it shows.
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={step.qrDataUrl} alt="TOTP enrollment QR code" className="mx-auto h-44 w-44 rounded-md border border-line bg-white p-2" />
+            <div className="break-all text-center text-[10px] text-ink-faint">
+              Manual key: <span className="num">{step.secret}</span>
+            </div>
+            <input
+              className={`${inputCls} num text-center text-lg tracking-[0.3em]`}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoComplete="one-time-code"
+              placeholder="123456"
+            />
+            {error && <div className="text-sm text-coral">{error}</div>}
+            <button disabled={busy || !code.trim()} className={buttonCls}>
+              {busy ? "Confirming…" : "Confirm & sign in"}
+            </button>
+          </form>
+        )}
+
+        {step.kind === "recovery_codes" && (
+          <div className="mt-8 space-y-4">
+            <div className="text-sm text-ink-soft">
+              MFA is on. Save these one-time recovery codes somewhere safe — they
+              are shown only once.
+            </div>
+            <div className="num grid grid-cols-2 gap-2 rounded-md border border-line bg-surface p-4 text-center text-sm">
+              {step.codes.map((c) => <div key={c}>{c}</div>)}
+            </div>
+            <button className={buttonCls} onClick={() => router.replace("/")}>Continue</button>
+          </div>
+        )}
       </div>
     </div>
   );

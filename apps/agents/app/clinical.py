@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from .config import PLATFORM_DATABASE_URL, llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 _embedder = None
@@ -127,6 +128,13 @@ class _Summary(BaseModel):
 
 def previsit(req: PrevisitRequest) -> PrevisitResponse:
     with _conn() as conn:
+        patient = conn.execute(
+            """
+            SELECT first_name, last_name FROM patients
+            WHERE location_id = %s AND source_id = %s
+            """,
+            (req.locationId, req.patientSourceId),
+        ).fetchone()
         notes = conn.execute(
             """
             SELECT source_id, happened_at::date::text, note
@@ -163,13 +171,16 @@ def previsit(req: PrevisitRequest) -> PrevisitResponse:
     if not llm_available():
         return PrevisitResponse(
             summary=(
-                f"(LLM key not configured — raw chart digest)\nMost recent notes:\n"
+                "(LLM key not configured — raw chart digest)\nMost recent notes:\n"
                 + "\n".join(f"- [{n[0]}] {n[1]}: {n[2][:140]}…" for n in notes[:4])
             ),
             citedNoteIds=[n[0] for n in notes[:4]],
             usedLlm=False,
         )
 
+    deid = Deidentifier()
+    if patient:
+        deid.register_person(f"{patient[0]} {patient[1]}")
     result = invoke_structured(_Summary, [
         SystemMessage(content=(
             "You are the clinical-operations agent for a dental practice, preparing a "
@@ -182,7 +193,7 @@ def previsit(req: PrevisitRequest) -> PrevisitResponse:
             f"Chart notes (newest first):\n{notes_block}\n\n"
             f"Treatment-planned procedures:\n{planned_block}"
         )),
-    ], max_tokens=2048)
+    ], max_tokens=2048, deid=deid)
     return PrevisitResponse(
         summary=result.summary, citedNoteIds=result.cited_note_ids, usedLlm=True
     )

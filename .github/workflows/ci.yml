@@ -1,0 +1,72 @@
+# F2: CI pipeline. Everything runs in full-mock mode — Docker only for the
+# data plane (Postgres/pgvector), exactly per the cross-cutting conventions.
+# Three jobs: TypeScript typecheck+tests, Python lint+tests, and a schema
+# smoke that pushes the drizzle schema + bootstrap against a live Postgres.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: typecheck + tests (pnpm workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # Transform contract, adapters, simulator determinism, clearinghouse,
+      # metrics, policy matrix, audit chain — the full vitest suite.
+      - run: pnpm test
+
+  python:
+    name: agents lint + tests (uv)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agents
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --dev
+      - run: uv run ruff check app tests
+      - run: uv run pytest -q
+
+  schema-smoke:
+    name: schema push + bootstrap (dockerized Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dental
+          POSTGRES_PASSWORD: dental
+          POSTGRES_DB: dental
+        ports:
+          - 5442:5432
+        options: >-
+          --health-cmd "pg_isready -U dental -d dental"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PLATFORM_DATABASE_URL: postgres://dental:dental@localhost:5442/dental
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dental/db build
+      - run: pnpm --filter @dental/db push
+      - run: pnpm --filter @dental/db bootstrap

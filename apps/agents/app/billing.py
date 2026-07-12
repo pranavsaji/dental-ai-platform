@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .config import llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 
@@ -49,6 +50,8 @@ class _Letter(BaseModel):
 
 class _State(TypedDict):
     request: ReviewRequest
+    # One Deidentifier per request so prioritize + draft share the token map.
+    deid: Deidentifier
     priority: _Priority
     letter: _Letter
 
@@ -68,7 +71,7 @@ def _prioritize(state: _State) -> dict:
             "60+ is urgent), dollar value, and expected insurance payment. Pick from the list."
         )),
         HumanMessage(content=f"Practice: {req.locationName}\nOpen claims:\n{lines}"),
-    ])
+    ], deid=state["deid"])
     return {"priority": result}
 
 
@@ -91,7 +94,7 @@ def _draft(state: _State) -> dict:
             f"({claim.daysOutstanding} days ago)\nBilled: ${claim.claimFee:.2f}, "
             f"expected insurance payment: ${claim.insPayEst:.2f}\nPractice: {req.locationName}"
         )),
-    ])
+    ], deid=state["deid"])
     return {"letter": result}
 
 
@@ -167,6 +170,8 @@ def summarize_eligibility(req: EligibilitySummaryRequest) -> EligibilitySummaryR
     if not llm_available():
         return _eligibility_fallback(req)
     try:
+        deid = Deidentifier()
+        deid.register_person(req.patientName)
         result = invoke_structured(_Summary, [
             SystemMessage(content=(
                 "Summarize a dental insurance eligibility response for the front desk in one or "
@@ -175,7 +180,7 @@ def summarize_eligibility(req: EligibilitySummaryRequest) -> EligibilitySummaryR
                 "exhausted allowances, unmet deductible)."
             )),
             HumanMessage(content=req.model_dump_json()),
-        ])
+        ], deid=deid)
         return EligibilitySummaryResponse(summary=result.summary, usedLlm=True)
     except Exception:
         return _eligibility_fallback(req)
@@ -224,6 +229,8 @@ def draft_preauth(req: PreauthDraftRequest) -> PreauthDraftResponse:
     if not llm_available():
         return _preauth_fallback(req)
     try:
+        deid = Deidentifier()
+        deid.register_person(req.patientName)
         notes = "\n".join(f"[note {n.id}] {n.note}" for n in req.notes) or "(no chart notes provided)"
         result = invoke_structured(_Narrative, [
             SystemMessage(content=(
@@ -238,7 +245,7 @@ def draft_preauth(req: PreauthDraftRequest) -> PreauthDraftResponse:
                 f"({req.procCode}{', tooth ' + req.toothNum if req.toothNum else ''}), fee ${req.fee:.2f}\n"
                 f"Chart notes:\n{notes}"
             )),
-        ])
+        ], deid=deid)
         return PreauthDraftResponse(narrative=result.narrative, usedLlm=True)
     except Exception:
         return _preauth_fallback(req)
@@ -289,6 +296,8 @@ def draft_appeal(req: AppealDraftRequest) -> AppealDraftResponse:
     if not llm_available():
         return _appeal_fallback(req)
     try:
+        deid = Deidentifier()
+        deid.register_person(req.patientName)
         result = invoke_structured(_Appeal, [
             SystemMessage(content=(
                 "Draft a dental claim appeal. The denial category was determined by a "
@@ -298,7 +307,7 @@ def draft_appeal(req: AppealDraftRequest) -> AppealDraftResponse:
                 "findings. Letter under 200 words, professional tone, requesting reprocessing."
             )),
             HumanMessage(content=req.model_dump_json()),
-        ])
+        ], deid=deid)
         return AppealDraftResponse(summary=result.summary, letter=result.letter, usedLlm=True)
     except Exception:
         return _appeal_fallback(req)
@@ -320,7 +329,10 @@ def review(req: ReviewRequest) -> ReviewResponse:
         g.add_edge("draft", END)
         _graph = g.compile()
     try:
-        out = _graph.invoke({"request": req})
+        deid = Deidentifier()
+        for c in req.claims:
+            deid.register_person(c.patientName)
+        out = _graph.invoke({"request": req, "deid": deid})
         return ReviewResponse(
             claimSourceId=out["priority"].claim_source_id,
             rationale=out["priority"].rationale,

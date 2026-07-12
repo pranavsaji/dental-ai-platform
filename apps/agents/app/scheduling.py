@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .config import llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 
@@ -61,6 +62,8 @@ class _Draft(BaseModel):
 
 class _State(TypedDict):
     request: ProposeRequest
+    # One Deidentifier per request so rank + draft share the same token map.
+    deid: Deidentifier
     chosen: _Ranking
     draft: _Draft
 
@@ -84,7 +87,7 @@ def _rank_node(state: _State) -> dict:
             f"Open slot: {req.slot.startsAt} ({req.slot.minutes} min, {req.slot.procDescript}) "
             f"at {req.locationName}.\nCandidates:\n{lines}"
         )),
-    ])
+    ], deid=state["deid"])
     return {"chosen": result}
 
 
@@ -106,7 +109,7 @@ def _draft_node(state: _State) -> dict:
             f"Slot: {req.slot.startsAt} ({req.slot.minutes} minutes)\n"
             f"Patient overdue for hygiene recall since {chosen.overdueSince}."
         )),
-    ])
+    ], deid=state["deid"])
     return {"draft": result}
 
 
@@ -207,6 +210,9 @@ def outreach(req: OutreachRequest) -> OutreachResponse:
     if not llm_available():
         return _outreach_fallback(req)
     try:
+        deid = Deidentifier()
+        for c in req.candidates:
+            deid.register_person(c.name)
         lines = "\n".join(
             f"- patientSourceId={c.patientSourceId} | {c.name} | {c.description} ({c.procCode}) | "
             f"${c.fee:.0f} | planned {c.ageDays} days ago"
@@ -223,7 +229,7 @@ def outreach(req: OutreachRequest) -> OutreachResponse:
                 "options. Under 320 characters, no emojis, no invented clinical details."
             )),
             HumanMessage(content=f"Practice: {req.locationName}\nBacklog:\n{lines}"),
-        ])
+        ], deid=deid)
         valid = [
             p for p in result.picks
             if any(c.patientSourceId == p.patientSourceId for c in req.candidates) and p.message.strip()
@@ -247,7 +253,12 @@ def propose(req: ProposeRequest) -> ProposeResponse:
     if _graph is None:
         _graph = _build_graph()
     try:
-        out = _graph.invoke({"request": req})
+        deid = Deidentifier()
+        deid.register_person(req.cancelledPatientName)
+        for c in req.candidates:
+            deid.register_person(c.name)
+            deid.register_person(c.phone, kind="PHONE")
+        out = _graph.invoke({"request": req, "deid": deid})
         return ProposeResponse(
             patientSourceId=out["chosen"].patient_source_id,
             message=out["draft"].message,

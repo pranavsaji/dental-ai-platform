@@ -3,6 +3,7 @@ import { and, count, desc, eq, sql } from "drizzle-orm";
 import { tasks } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
+import { EventsService } from "./events.service";
 
 // Task management substrate (A5): the durable, assignable work queue that
 // workflow dead-ends escalate into. Every transition is audited; tenancy is
@@ -33,7 +34,8 @@ const PRIORITY_ORDER = sql`case ${tasks.priority}
 export class TasksService {
   constructor(
     @Inject(DB) private db: Db,
-    private audit: AuditService
+    private audit: AuditService,
+    private events: EventsService
   ) {}
 
   async create(input: CreateTaskInput): Promise<number> {
@@ -57,6 +59,11 @@ export class TasksService {
       actorType: input.createdBy.startsWith("agent:") ? "agent" : "user",
       actor: input.createdBy, action: "task.created", resource: "task",
       resourceId: String(row.id), purpose: input.type
+    });
+    await this.events.publish({
+      orgId: input.orgId, locationId: input.locationId, type: "task.created",
+      title: input.title, body: `${input.type} · ${input.priority ?? "normal"}`,
+      resourceType: "task", resourceId: String(row.id)
     });
     return row.id;
   }

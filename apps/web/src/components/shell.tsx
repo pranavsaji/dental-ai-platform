@@ -1,9 +1,9 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { api, clearSession, getToken, getUser, type Location, type SessionUser } from "@/lib/api";
+import { API_URL, api, clearSession, getUser, setSession, type Location, type SessionUser } from "@/lib/api";
 
 interface AppCtx {
   user: SessionUser;
@@ -55,6 +55,154 @@ function IntegrationBadge({ location }: { location: Location }) {
   );
 }
 
+interface Notification {
+  id: number;
+  type: string;
+  title: string;
+  body: string;
+  resourceType: string | null;
+  resourceId: string | null;
+  createdAt: string;
+}
+
+// F1: deep link per event type — clicking a notification lands on the page
+// where the work is.
+function notificationHref(n: Notification): string {
+  switch (n.type) {
+    case "approval.created": return "/approvals";
+    case "task.created": return "/tasks";
+    case "sms.received": return "/sms";
+    case "huddle.ready": return "/";
+    case "sync.lagging": return "/";
+    default: return "/";
+  }
+}
+
+const TYPE_GLYPH: Record<string, string> = {
+  "approval.created": "✳",
+  "task.created": "☰",
+  "sms.received": "◗",
+  "huddle.ready": "◳",
+  "sync.lagging": "⚠"
+};
+
+// F1: notification bell. Live events arrive over SSE (the session cookie
+// authenticates the EventSource — the F2 cookie work is what makes this
+// guardable); the backlog loads from /portal/notifications. Unread state is a
+// per-location last-seen watermark in localStorage.
+function NotificationBell({ locationId, onEvent }: {
+  locationId: number;
+  onEvent: (type: string) => void;
+}) {
+  const [items, setItems] = useState<Notification[]>([]);
+  const [open, setOpen] = useState(false);
+  const [seenAt, setSeenAt] = useState<number>(0);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const seenKey = `dental.notifSeen.${locationId}`;
+
+  useEffect(() => {
+    setSeenAt(Number(window.localStorage.getItem(seenKey) ?? 0));
+    api<Notification[]>(`/portal/notifications?locationId=${locationId}`)
+      .then(setItems)
+      .catch(() => {});
+  }, [locationId, seenKey]);
+
+  // Live stream; the browser reconnects dropped EventSources on its own, and
+  // the pages' interval pollers remain as the fallback when the stream is down.
+  useEffect(() => {
+    const es = new EventSource(`${API_URL}/portal/events?locationId=${locationId}`, {
+      withCredentials: true
+    });
+    const handler = (e: MessageEvent) => {
+      try {
+        const evt = JSON.parse(e.data) as Notification;
+        setItems((prev) => [evt, ...prev.filter((p) => p.id !== evt.id)].slice(0, 50));
+        onEvent(evt.type);
+      } catch {
+        /* malformed event — ignore */
+      }
+    };
+    es.addEventListener("notification", handler);
+    return () => es.close();
+  }, [locationId, onEvent]);
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const unread = items.filter((n) => new Date(n.createdAt).getTime() > seenAt).length;
+
+  function markAllRead() {
+    const now = Date.now();
+    window.localStorage.setItem(seenKey, String(now));
+    setSeenAt(now);
+  }
+
+  return (
+    <div className="relative" ref={panelRef}>
+      <button
+        className="relative rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm shadow-sm transition hover:border-teal"
+        onClick={() => setOpen((o) => !o)}
+        title="Notifications"
+      >
+        ◔
+        {unread > 0 && (
+          <span className="num absolute -right-1.5 -top-1.5 rounded-full bg-coral px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 z-50 w-96 rounded-lg border border-line bg-paper shadow-xl">
+          <div className="flex items-center justify-between border-b border-line/70 px-4 py-2.5">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-soft">
+              Notifications
+            </span>
+            <button className="text-xs text-teal underline-offset-2 hover:underline" onClick={markAllRead}>
+              Mark all read
+            </button>
+          </div>
+          <div className="max-h-96 overflow-y-auto">
+            {items.length === 0 && (
+              <div className="px-4 py-8 text-center text-sm text-ink-faint">Nothing yet.</div>
+            )}
+            {items.map((n) => {
+              const isUnread = new Date(n.createdAt).getTime() > seenAt;
+              return (
+                <Link
+                  key={n.id}
+                  href={notificationHref(n)}
+                  onClick={() => setOpen(false)}
+                  className={`block border-b border-line/50 px-4 py-3 transition hover:bg-surface ${isUnread ? "bg-mint/20" : ""}`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <span className="mt-0.5 w-4 text-center text-ink-faint">{TYPE_GLYPH[n.type] ?? "•"}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className={`text-[13px] leading-snug ${isUnread ? "font-medium text-ink" : "text-ink-soft"}`}>
+                        {n.title}
+                      </div>
+                      {n.body && <div className="mt-0.5 truncate text-xs text-ink-faint">{n.body}</div>}
+                      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-faint">
+                        {new Date(n.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -62,15 +210,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationId, setLocationIdState] = useState<number | null>(null);
   const [openTasks, setOpenTasks] = useState<number>(0);
-  const isLogin = pathname === "/login";
+  const [taskRefresh, setTaskRefresh] = useState(0);
+  const isLogin = pathname === "/login" || pathname.startsWith("/login/");
 
   useEffect(() => {
     if (isLogin) return;
-    if (!getToken()) {
-      router.replace("/login");
-      return;
-    }
-    setUser(getUser());
+    // F2: authorization lives in the httpOnly cookie; the stored profile is
+    // just a render hint. Confirm the cookie is live (and refresh the profile).
+    const cached = getUser();
+    if (cached) setUser(cached);
+    api<SessionUser>("/auth/me")
+      .then((me) => { setSession(me); setUser(me); })
+      .catch(() => router.replace("/login"));
+
     const loadLocations = (first: boolean) =>
       api<Location[]>("/portal/locations").then((locs) => {
         setLocations(locs);
@@ -86,7 +238,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, [isLogin, router]);
 
-  // Open-task count for the sidebar badge (A5); SSE replaces polling in F1.
+  // Open-task count for the sidebar badge (A5). Polling stays as the fallback;
+  // F1's SSE events bump taskRefresh so the badge reacts instantly.
   useEffect(() => {
     if (isLogin || locationId == null) return;
     const load = () =>
@@ -96,7 +249,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     load();
     const t = setInterval(load, 10_000);
     return () => clearInterval(t);
-  }, [isLogin, locationId]);
+  }, [isLogin, locationId, taskRefresh]);
 
   const ctx = useMemo<AppCtx | null>(() => {
     if (!user) return null;
@@ -120,6 +273,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
     );
   }
 
+  const nav = ctx.user.role === "admin"
+    ? [...NAV, { href: "/admin/users", label: "Users", glyph: "⛭" }]
+    : NAV;
+
   return (
     <Ctx.Provider value={ctx}>
       <div className="grain flex min-h-screen">
@@ -131,7 +288,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <nav className="flex-1 space-y-0.5 px-3">
-            {NAV.map((n) => {
+            {nav.map((n) => {
               const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
               return (
                 <Link
@@ -157,12 +314,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="border-t border-pine-2 px-6 py-4 text-xs">
             <div className="text-white">{ctx.user.name}</div>
             <div className="mt-0.5 text-mint/60">{ctx.user.role}</div>
-            <button
-              className="mt-3 text-mint/80 underline-offset-2 hover:text-white hover:underline"
-              onClick={() => { clearSession(); router.replace("/login"); }}
-            >
-              Sign out
-            </button>
+            <div className="mt-3 flex items-center gap-3">
+              <Link href="/account" className="text-mint/80 underline-offset-2 hover:text-white hover:underline">
+                Account
+              </Link>
+              <button
+                className="text-mint/80 underline-offset-2 hover:text-white hover:underline"
+                onClick={() => { clearSession(); router.replace("/login"); }}
+              >
+                Sign out
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -174,6 +336,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
               Lone Star Dental Group
             </div>
             <div className="flex items-center gap-3">
+              <NotificationBell
+                locationId={ctx.location.id}
+                onEvent={(type) => {
+                  if (type === "task.created") setTaskRefresh((k) => k + 1);
+                }}
+              />
               <IntegrationBadge location={ctx.location} />
               <span className="text-[11px] uppercase tracking-widest text-ink-faint">Location</span>
               <select

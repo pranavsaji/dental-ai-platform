@@ -89,7 +89,9 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
           // C1: morning huddle
           generateHuddleDigest: this.activities.generateHuddleDigest.bind(this.activities),
           // D1: metrics rollup
-          rollupDailyMetrics: this.activities.rollupDailyMetrics.bind(this.activities)
+          rollupDailyMetrics: this.activities.rollupDailyMetrics.bind(this.activities),
+          // F2: audit-chain verification
+          verifyAuditChain: this.activities.verifyAuditChain.bind(this.activities)
         }
       });
       void this.worker.run().catch((err) => this.log.error(`worker crashed: ${err.message}`));
@@ -130,11 +132,27 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
   //   02:30 metricsRollup (D1)           05:00 insuranceVerification (B2)
   //   06:00 morningHuddle (C1)           07:00 treatmentOutreach (C5)
   //   16:00 reminderSweep for T+1 (C2)
+  // Plus one global cron: 03:30 auditChainVerify (F2 — the chain spans orgs).
   // Manual triggers for all of them live under /portal/ops and /portal/billing.
   private async ensureCrons(): Promise<void> {
     if (!this.client) return;
     try {
       const locs = await this.db.select().from(locations);
+      if (locs.length > 0) {
+        try {
+          await this.client.workflow.start("auditChainVerify", {
+            taskQueue: TASK_QUEUE,
+            workflowId: "audit-chain-verify",
+            cronSchedule: "30 3 * * *",
+            args: [{ orgId: locs[0].orgId }]
+          });
+          this.log.log("registered cron audit-chain-verify (30 3 * * *)");
+        } catch (err) {
+          if (!((err as any).name === "WorkflowExecutionAlreadyStartedError" || (err as Error).message?.includes("already"))) {
+            this.log.error(`cron audit-chain-verify: ${(err as Error).message}`);
+          }
+        }
+      }
       for (const loc of locs) {
         const base = { orgId: loc.orgId, locationId: loc.id, siteKey: loc.key };
         const crons: Array<{ name: string; workflowId: string; schedule: string; arg: unknown }> = [

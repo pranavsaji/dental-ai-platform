@@ -1,5 +1,8 @@
-// Client-side API helper. JWT lives in localStorage for this local demo;
-// production would use httpOnly cookies behind a BFF.
+// Client-side API helper. F2: the session JWT lives in an httpOnly cookie set
+// by the API (XSS cannot read it); every request sends credentials and
+// mutations echo the CSRF double-submit cookie as X-CSRF-Token. localStorage
+// keeps only the non-sensitive user profile for instant shell rendering —
+// authorization always comes from the cookie, never from localStorage.
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
@@ -22,13 +25,7 @@ export interface Location {
   lastHeartbeatAt?: string | null;
 }
 
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem("dental.token");
-}
-
-export function setSession(token: string, user: SessionUser): void {
-  window.localStorage.setItem("dental.token", token);
+export function setSession(user: SessionUser): void {
   window.localStorage.setItem("dental.user", JSON.stringify(user));
 }
 
@@ -39,8 +36,18 @@ export function getUser(): SessionUser | null {
 }
 
 export function clearSession(): void {
-  window.localStorage.removeItem("dental.token");
   window.localStorage.removeItem("dental.user");
+  // Best-effort cookie clear; ignore failures (we're leaving anyway).
+  void fetch(`${API_URL}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
+}
+
+function csrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  for (const part of document.cookie.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === "dental_csrf") return decodeURIComponent(v.join("="));
+  }
+  return null;
 }
 
 export class ApiError extends Error {
@@ -49,13 +56,17 @@ export class ApiError extends Error {
   }
 }
 
+const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
+  const method = (init?.method ?? "GET").toUpperCase();
+  const csrf = MUTATING.has(method) ? csrfToken() : null;
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "content-type": "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { "x-csrf-token": csrf } : {}),
       ...init?.headers
     }
   });

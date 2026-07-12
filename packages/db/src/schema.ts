@@ -43,6 +43,15 @@ export const users = pgTable("users", {
   locationId: bigint("location_id", { mode: "number" }),
   // scrypt salt:hash; null for SSO-only accounts (no password login)
   passwordHash: text("password_hash"),
+  // F3: same-day termination — a disabled user's JWT is rejected at the guard
+  // even though the token itself is still cryptographically valid.
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+  // F2: TOTP MFA. Secret is set at enroll start; enrolledAt is stamped only
+  // after the first valid code confirms the authenticator actually works.
+  mfaSecret: text("mfa_secret"),
+  mfaEnrolledAt: timestamp("mfa_enrolled_at", { withTimezone: true }),
+  // scrypt-hashed one-time recovery codes (shown in plaintext exactly once).
+  mfaRecoveryCodes: jsonb("mfa_recovery_codes").notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (t) => [uniqueIndex("users_email_uq").on(t.email)]);
 
@@ -283,7 +292,12 @@ export const auditLog = pgTable("audit_log", {
   resource: text("resource").notNull(),
   resourceId: text("resource_id").notNull().default(""),
   purpose: text("purpose").notNull().default(""),
-  at: timestamp("at", { withTimezone: true }).notNull().defaultNow()
+  at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  // F2: tamper-evident hash chain — entryHash = sha256(prevHash ‖ canonical
+  // JSON of the entry). Rows predating the chain carry "" and are skipped by
+  // verification (the chain covers everything after its genesis row).
+  prevHash: text("prev_hash").notNull().default(""),
+  entryHash: text("entry_hash").notNull().default("")
 }, (t) => [index("audit_org_at_idx").on(t.orgId, t.at)]);
 
 export const proposedActions = pgTable("proposed_actions", {
@@ -524,6 +538,24 @@ export const huddleDigests = pgTable("huddle_digests", {
   workflowId: text("workflow_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 }, (t) => [uniqueIndex("huddle_loc_date_uq").on(t.locationId, t.date)]);
+
+// F1: notification center backlog. One row per emitted platform event
+// (approval.created, task.created, sms.received, sync.lagging, huddle.ready);
+// the SSE stream pushes them live and the bell reads the recent backlog on
+// page load. Location-scoped and staff-shared; per-user read state is a
+// client-side last-seen watermark, not a server-side join table.
+export const notifications = pgTable("notifications", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: bigint("org_id", { mode: "number" }).notNull(),
+  locationId: bigint("location_id", { mode: "number" }).notNull(),
+  type: text("type").notNull(), // approval.created | task.created | sms.received | sync.lagging | huddle.ready
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  // Deep link into the record the event is about.
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (t) => [index("notifications_loc_created_idx").on(t.locationId, t.createdAt)]);
 
 // Clinical note embeddings for pgvector RAG (bge-small-en-v1.5 = 384 dims,
 // generated locally by the agents service — no external embedding API).

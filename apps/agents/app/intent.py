@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from .config import llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 Intent = Literal["question", "billing_question", "reschedule", "confirm", "other"]
@@ -75,6 +76,8 @@ def classify_intent(req: IntentRequest) -> IntentResponse:
     if not llm_available():
         return _fallback(req)
     try:
+        deid = Deidentifier()
+        deid.register_person(req.patientName)
         result = invoke_structured(_Classified, [
             SystemMessage(content=(
                 "You triage inbound SMS for a dental practice front desk. "
@@ -90,7 +93,7 @@ def classify_intent(req: IntentRequest) -> IntentResponse:
                 "never invent balances, prices, dates, or availability."
             )),
             HumanMessage(content=req.model_dump_json()),
-        ])
+        ], deid=deid)
         reply = (result.suggestedReply or "").strip()
         if not reply:
             return _fallback(req)

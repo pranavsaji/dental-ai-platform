@@ -793,3 +793,19 @@ export async function metricsRollup(input: MetricsRollupInput): Promise<string> 
   });
   return `rolled-${res.days}-days-${res.from}..${res.to}`;
 }
+
+// --- F2: nightly audit-chain verification ------------------------------------------
+
+export interface AuditChainVerifyInput {
+  orgId: number;
+}
+
+// The chain is global (one linked list across the platform), so this runs
+// once nightly, not per location. The activity recomputes every hash and
+// audit-logs the outcome with the chain anchor — a broken chain also raises
+// an urgent task so it lands in front of a human, not just in a log.
+export async function auditChainVerify(input: AuditChainVerifyInput): Promise<string> {
+  const wfId = workflowInfo().workflowId;
+  const res = await acts.verifyAuditChain({ orgId: input.orgId, workflowId: wfId });
+  return res.ok ? `verified-${res.checked}` : `BROKEN-at-${res.brokenAtId}`;
+}

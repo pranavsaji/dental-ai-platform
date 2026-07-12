@@ -1,20 +1,38 @@
 from fastapi import FastAPI, HTTPException
 
 from .billing import (
-    AppealDraftRequest, AppealDraftResponse, EligibilitySummaryRequest,
-    EligibilitySummaryResponse, PreauthDraftRequest, PreauthDraftResponse,
-    ReviewRequest, ReviewResponse, draft_appeal, draft_preauth, review,
+    AppealDraftRequest,
+    AppealDraftResponse,
+    EligibilitySummaryRequest,
+    EligibilitySummaryResponse,
+    PreauthDraftRequest,
+    PreauthDraftResponse,
+    ReviewRequest,
+    ReviewResponse,
+    draft_appeal,
+    draft_preauth,
+    review,
     summarize_eligibility,
 )
 from .clinical import (
-    PrevisitRequest, PrevisitResponse, SearchRequest, embed_pending, previsit, search,
+    PrevisitRequest,
+    PrevisitResponse,
+    SearchRequest,
+    embed_pending,
+    previsit,
+    search,
 )
 from .config import MODEL, llm_available, provider_chain
 from .huddle import HuddleRequest, HuddleResponse, draft_huddle
 from .insights import InsightsRequest, InsightsResponse, draft_insights
 from .intent import IntentRequest, IntentResponse, classify_intent
 from .scheduling import (
-    OutreachRequest, OutreachResponse, ProposeRequest, ProposeResponse, outreach, propose,
+    OutreachRequest,
+    OutreachResponse,
+    ProposeRequest,
+    ProposeResponse,
+    outreach,
+    propose,
 )
 
 app = FastAPI(title="Dental AI Agents", version="0.1.0")

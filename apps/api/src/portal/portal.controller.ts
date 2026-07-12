@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseIntPipe, Query, UseGuards } from "@nestjs/common";
+import { Controller, ForbiddenException, Get, Param, ParseIntPipe, Query, UseGuards } from "@nestjs/common";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
 import { PortalService } from "./portal.service";
 import { AuditService } from "../audit.service";
@@ -71,5 +71,24 @@ export class PortalController {
   @Get("audit")
   auditList(@CurrentUser() user: SessionUser, @Query("limit") limit?: string) {
     return this.portal.auditEntries(user, limit ? Number(limit) : 100);
+  }
+
+  // F2: tamper-evidence check — recomputes the audit hash chain. Same role
+  // gate as reading the audit log itself; the check is itself audited so the
+  // chain records who verified it and what anchor they saw.
+  @Get("audit/verify")
+  async auditVerify(@CurrentUser() user: SessionUser, @Query("limit") limit?: string) {
+    if (user.role !== "admin" && user.role !== "provider") {
+      throw new ForbiddenException("Audit verification requires admin or provider role");
+    }
+    const result = await this.audit.verifyChain(limit ? Number(limit) : undefined);
+    await this.audit.log({
+      orgId: user.orgId, actorType: "user", actor: user.email,
+      action: result.ok ? "audit.chain.verified" : "audit.chain.broken",
+      resource: "audit_log",
+      resourceId: result.anchor ? String(result.anchor.id) : "",
+      purpose: `${result.detail}${result.anchor ? `; anchor ${result.anchor.entryHash.slice(0, 16)}…` : ""}`
+    });
+    return result;
   }
 }

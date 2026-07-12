@@ -4,6 +4,7 @@ import { locations } from "@dental/db";
 import type { EdgeHeartbeat } from "@dental/shared";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
+import { EventsService } from "../portal/events.service";
 import type { EdgeSite } from "./edge-auth.guard";
 
 // Records edge heartbeats (A1) so the dashboard can show honest provenance:
@@ -14,7 +15,8 @@ export class HeartbeatService {
 
   constructor(
     @Inject(DB) private db: Db,
-    private audit: AuditService
+    private audit: AuditService,
+    private events: EventsService
   ) {}
 
   async record(site: EdgeSite, hb: EdgeHeartbeat): Promise<void> {
@@ -49,6 +51,15 @@ export class HeartbeatService {
         resourceId: String(site.locationId),
         purpose: hb.detail || `active mode ${hb.activeMode} (configured ${hb.configuredMode})`
       });
+      // F1: degradation is exactly the kind of thing the bell exists for.
+      if (hb.status === "degraded") {
+        await this.events.publish({
+          orgId: site.orgId, locationId: site.locationId, type: "sync.lagging",
+          title: `Site ${site.siteKey}: PMS sync degraded`,
+          body: hb.detail || `fell back from ${hb.configuredMode} to ${hb.activeMode}`,
+          resourceType: "location", resourceId: String(site.locationId)
+        });
+      }
     }
   }
 }

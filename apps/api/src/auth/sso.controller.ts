@@ -1,7 +1,8 @@
 // Browser-facing SSO endpoints. /auth/sso/login sends the user to the IdP;
-// /auth/sso/callback turns a verified ID token into a platform session and
-// hands it to the web app via URL fragment (never a query param, so the token
-// stays out of server/proxy logs).
+// /auth/sso/callback turns a verified ID token into a platform session — set
+// as httpOnly cookies (F2) — and redirects the web app with a bare #sso=ok
+// marker (no token ever appears in a URL). MFA note: SSO logins do not repeat
+// a TOTP challenge — step-up auth is the IdP's responsibility on that path.
 //
 // Account rules: a verified (issuer, subject) pair maps to exactly one user.
 // First SSO login links by email to an existing user; unknown emails are
@@ -10,24 +11,14 @@
 
 import { Controller, Get, Inject, Logger, Query, Req, Res } from "@nestjs/common";
 import type { Request, Response } from "express";
-import jwt from "jsonwebtoken";
 import { eq, and } from "drizzle-orm";
 import { authIdentities, orgs, users } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { OidcService, type IdTokenClaims } from "./oidc.service";
-import type { SessionUser } from "./auth";
+import { issueSession, readCookie, type SessionUser } from "./session";
 
-const JWT_SECRET = () => process.env.JWT_SECRET ?? "dev-jwt-secret-change-me";
 const TXN_COOKIE = "dental_sso_txn";
-
-function readCookie(req: Request, name: string): string | null {
-  for (const part of (req.headers.cookie ?? "").split(";")) {
-    const [k, ...v] = part.trim().split("=");
-    if (k === name) return decodeURIComponent(v.join("="));
-  }
-  return null;
-}
 
 @Controller("auth/sso")
 export class SsoController {
@@ -108,8 +99,9 @@ export class SsoController {
 
     const user = await this.resolveUser(claims, email);
     if (typeof user === "string") return fail(user);
+    if (user.disabledAt) return fail("account_disabled");
 
-    const session: SessionUser = {
+    const session: Omit<SessionUser, "csrf"> = {
       sub: user.id,
       orgId: user.orgId,
       email: user.email,
@@ -122,8 +114,8 @@ export class SsoController {
       action: "auth.sso.login", resource: "session", purpose: `oidc:${claims.iss}`
     });
     res.clearCookie(TXN_COOKIE, { path: "/auth/sso" });
-    const token = jwt.sign(session, JWT_SECRET(), { expiresIn: "12h" });
-    return res.redirect(`${c.webUrl}/login/sso#token=${encodeURIComponent(token)}`);
+    issueSession(res, session);
+    return res.redirect(`${c.webUrl}/login/sso#sso=ok`);
   }
 
   // Returns the user row, or an error code string for the redirect.

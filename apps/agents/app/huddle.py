@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from .config import llm_available
+from .deid import Deidentifier
 from .llm import invoke_structured
 
 
@@ -107,6 +108,10 @@ def draft_huddle(req: HuddleRequest) -> HuddleResponse:
     if not llm_available():
         return _fallback(req)
     try:
+        deid = Deidentifier()
+        # Patient names in the payload live on the no-show risk list.
+        for r in req.data.get("schedule", {}).get("highRisk", []):
+            deid.register_person(r.get("patientName"))
         result = invoke_structured(_Digest, [
             SystemMessage(content=(
                 "You are the morning-huddle agent for a dental practice. Turn the structured "
@@ -120,7 +125,7 @@ def draft_huddle(req: HuddleRequest) -> HuddleResponse:
                 "or patient names — only names present in the data may appear."
             )),
             HumanMessage(content=req.model_dump_json()),
-        ])
+        ], deid=deid)
         return HuddleResponse(narrative=result.narrative, actions=result.actions[:5], usedLlm=True)
     except Exception:
         return _fallback(req)
