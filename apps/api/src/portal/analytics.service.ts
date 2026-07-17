@@ -3,10 +3,11 @@ import { and, asc, eq, gte, lte } from "drizzle-orm";
 import { dailyLocationMetrics, locations } from "@dental/db";
 import { DB, type Db } from "../db";
 import type { SessionUser } from "../auth/auth";
+import { assertCan } from "../auth/roles";
 
 // D2/D3: cross-location analytics reads. This is the platform's first
 // genuinely org-wide read surface — queries scope by orgId only, so access is
-// restricted to admin/provider users who are NOT pinned to a location.
+// restricted to admin users who are NOT pinned to a location.
 // Everything here reads only the daily_location_metrics rows D1 writes.
 
 export interface LocationAggregate {
@@ -69,10 +70,12 @@ type MetricRow = typeof dailyLocationMetrics.$inferSelect;
 export class AnalyticsService {
   constructor(@Inject(DB) private db: Db) {}
 
-  /** Org-wide gate: admin/provider role AND not pinned to a single location. */
+  /** Org-wide gate: the owner's revenue view — admin role AND not pinned to
+   *  a single location. Doctors see their own patients, not org financials. */
   assertOrgWide(user: SessionUser): void {
-    if ((user.role !== "admin" && user.role !== "provider") || user.locationId != null) {
-      throw new ForbiddenException("Analytics requires an org-wide admin or provider account");
+    assertCan(user, "analytics.read");
+    if (user.locationId != null) {
+      throw new ForbiddenException("Analytics requires an org-wide admin account");
     }
   }
 

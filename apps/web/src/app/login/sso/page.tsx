@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { API_URL, setSession, type SessionUser } from "@/lib/api";
+import { LoginFallback } from "@/components/three/login-fallback";
 
 const ERROR_MESSAGES: Record<string, string> = {
   not_configured: "SSO is not configured on this server.",
@@ -50,8 +51,9 @@ export default function SsoLandingPage() {
   }, [router]);
 
   return (
-    <div className="grid min-h-screen place-items-center bg-pine">
-      <div className="w-[24rem] rounded-xl border border-pine-2 bg-paper p-8 text-center shadow-2xl">
+    <div className="relative grid min-h-screen place-items-center overflow-hidden bg-pine-deep">
+      <LoginFallback />
+      <div className="relative z-10 w-[24rem] rounded-xl border border-white/10 bg-paper p-8 text-center shadow-[var(--shadow-xl)]">
         <div className="font-display text-3xl font-semibold text-pine">Dental AI</div>
         {error ? (
           <>

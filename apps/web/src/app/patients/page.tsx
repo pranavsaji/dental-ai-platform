@@ -55,7 +55,7 @@ export default function PatientsPage() {
   return (
     <div>
       <PageTitle kicker="Records" title="Patients" />
-      <div className="rise rise-1 mb-4 flex flex-wrap items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <input
           placeholder="Search by name…"
           value={q}

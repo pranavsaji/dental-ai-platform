@@ -5,6 +5,12 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { useApp } from "@/components/shell";
 import { Card, Empty, PageTitle, StatTile, Td, Th, fmtMoney } from "@/components/ui";
+import { RequireRole } from "@/components/require-role";
+import { AreaChart } from "@/components/charts/area-chart";
+import { BarCompare } from "@/components/charts/bar-compare";
+import { m, AnimatePresence, StaggerList, StaggerItem } from "@/components/motion/motion";
+import { riseIn } from "@/components/motion/presets";
+import { StatTileSkeleton, TableSkeleton } from "@/components/skeleton";
 
 // D2: cross-location analytics over the D1 rollup rows. Org-wide surface —
 // the API rejects location-pinned or staff users with 403 (rendered as the
@@ -82,44 +88,6 @@ interface InsightsAnswer {
 
 const LINE_TONES = ["text-teal", "text-amber", "text-coral", "text-pine"];
 
-function Sparkline({ series, height = 34 }: {
-  series: Array<{ tone: string; values: number[] }>;
-  height?: number;
-}) {
-  const all = series.flatMap((s) => s.values);
-  if (all.length === 0) return <div className="h-[34px]" />;
-  const min = Math.min(...all);
-  const max = Math.max(...all);
-  const span = max - min || 1;
-  const w = 220;
-  return (
-    <svg viewBox={`0 0 ${w} ${height}`} className="h-[34px] w-full" preserveAspectRatio="none">
-      {series.map((s, si) => {
-        if (s.values.length < 2) return null;
-        const pts = s.values
-          .map((v, i) => {
-            const x = (i / (s.values.length - 1)) * (w - 4) + 2;
-            const y = height - 4 - ((v - min) / span) * (height - 8);
-            return `${x.toFixed(1)},${y.toFixed(1)}`;
-          })
-          .join(" ");
-        return (
-          <polyline
-            key={si}
-            points={pts}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinejoin="round"
-            className={s.tone}
-            opacity={0.9}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
 // Comparison-table metric definitions: how to read the value, how to render
 // it, and which direction is bad — the worst cell per column gets flagged.
 const COLUMNS: Array<{
@@ -150,7 +118,7 @@ const TREND_METRICS: Array<{ key: keyof TrendPoint; label: string; money?: boole
   { key: "chairUtilization", label: "Chair utilization", pct: true }
 ];
 
-export default function AnalyticsPage() {
+function AnalyticsPage() {
   const { user, locations } = useApp();
   const [days, setDays] = useState(30);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -223,14 +191,16 @@ export default function AnalyticsPage() {
 
   const trendSeries = useMemo(() => {
     if (!trends) return [];
-    return TREND_METRICS.map((m) => ({
-      ...m,
+    const dates = [...new Set(trends.series.map((p) => p.date))].sort();
+    return TREND_METRICS.map((metric) => ({
+      ...metric,
+      labels: dates,
       series: trends.locations.map((loc, i) => ({
         tone: LINE_TONES[i % LINE_TONES.length],
         name: loc.name,
         values: trends.series
           .filter((p) => p.locationId === loc.id)
-          .map((p) => Number(p[m.key]))
+          .map((p) => Number(p[metric.key]))
       }))
     }));
   }, [trends]);
@@ -247,20 +217,29 @@ export default function AnalyticsPage() {
   return (
     <div>
       <PageTitle kicker="DSO analytics" title="Analytics" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         Every location side by side, computed nightly from canonical data into
         daily rollups. Worst-in-column is flagged; cells deep-link into the
         underlying worklist.
       </p>
 
-      {notice && (
-        <div className="rise mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-2.5 text-sm text-pine">
-          {notice}
-          <button className="ml-3 text-xs underline" onClick={() => setNotice("")}>dismiss</button>
-        </div>
-      )}
+      <AnimatePresence>
+        {notice && (
+          <m.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mb-4 overflow-hidden"
+          >
+            <div className="rounded-md border border-teal/40 bg-mint/40 px-4 py-2.5 text-sm text-pine">
+              {notice}
+              <button className="ml-3 text-xs underline" onClick={() => setNotice("")}>dismiss</button>
+            </div>
+          </m.div>
+        )}
+      </AnimatePresence>
 
-      <div className="rise mb-5 flex items-center gap-2">
+      <div className="mb-5 flex items-center gap-2">
         {[30, 90].map((d) => (
           <button
             key={d}
@@ -284,20 +263,51 @@ export default function AnalyticsPage() {
         )}
       </div>
 
-      {summary && (
+      {!summary ? (
         <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatTile label={`Production · ${summary.days}d`} value={fmtMoney(summary.org.productionCompleted)} detail="all locations" />
-          <StatTile label="Collections" value={fmtMoney(summary.org.collections)} detail={`${Math.round(summary.org.collectionRate * 100)}% of production`} tone={summary.org.collectionRate < 0.9 ? "warn" : "good"} delay="rise-1" />
-          <StatTile label="AR outstanding" value={fmtMoney(summary.org.arTotal)} detail={`${fmtMoney(summary.org.ar90Plus)} at 90+`} tone={summary.org.ar90Plus > 0 ? "warn" : "default"} delay="rise-2" />
-          <StatTile label="Unscheduled treatment" value={fmtMoney(summary.org.unscheduledTreatmentValue)} detail={`${summary.org.newPatients} new patients in range`} delay="rise-3" />
+          {Array.from({ length: 4 }, (_, i) => <StatTileSkeleton key={i} />)}
         </div>
+      ) : (
+        <StaggerList className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StaggerItem>
+            <StatTile label={`Production · ${summary.days}d`} value={summary.org.productionCompleted} format={fmtMoney} detail="all locations" />
+          </StaggerItem>
+          <StaggerItem>
+            <StatTile label="Collections" value={summary.org.collections} format={fmtMoney} detail={`${Math.round(summary.org.collectionRate * 100)}% of production`} tone={summary.org.collectionRate < 0.9 ? "warn" : "good"} />
+          </StaggerItem>
+          <StaggerItem>
+            <StatTile label="AR outstanding" value={summary.org.arTotal} format={fmtMoney} detail={`${fmtMoney(summary.org.ar90Plus)} at 90+`} tone={summary.org.ar90Plus > 0 ? "warn" : "default"} />
+          </StaggerItem>
+          <StaggerItem>
+            <StatTile label="Unscheduled treatment" value={summary.org.unscheduledTreatmentValue} format={fmtMoney} detail={`${summary.org.newPatients} new patients in range`} />
+          </StaggerItem>
+        </StaggerList>
       )}
 
       {/* Location comparison (worst-in-column flagged) */}
-      <Card title={`Location comparison — ${summary ? `${summary.from} to ${summary.to}` : ""}`} className="rise rise-2 mb-6">
-        {!summary || summary.locations.length === 0 ? (
+      <Card title={`Location comparison — ${summary ? `${summary.from} to ${summary.to}` : ""}`} className="mb-6">
+        {!summary ? (
+          <TableSkeleton rows={4} cols={6} />
+        ) : summary.locations.length === 0 ? (
           <Empty text="No metric rows yet. Run the metrics rollup or the bootstrap backfill." />
         ) : (
+          <>
+          {summary.locations.length > 1 && (
+            <div className="border-b border-line/60 px-5 py-4">
+              <div className="mb-2.5 text-[11px] uppercase tracking-[0.14em] text-ink-faint">
+                Production by location
+              </div>
+              <BarCompare
+                items={summary.locations.map((l) => ({
+                  id: l.locationId,
+                  label: l.name,
+                  value: l.productionCompleted
+                }))}
+                format={fmtMoney}
+                worstId={worstByColumn.get("production") ?? null}
+              />
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -332,13 +342,14 @@ export default function AnalyticsPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </Card>
 
-      {/* Trend sparklines */}
+      {/* Trend charts */}
       <Card
         title={`Trends — last ${days} days`}
-        className="rise rise-3 mb-6"
+        className="mb-6"
         action={
           trends && (
             <div className="flex items-center gap-3 text-[11px] text-ink-soft">
@@ -352,31 +363,37 @@ export default function AnalyticsPage() {
           )
         }
       >
-        {!trends || trends.series.length === 0 ? (
+        {!trends ? (
+          <TableSkeleton rows={4} cols={3} />
+        ) : trends.series.length === 0 ? (
           <Empty text="No trend data yet." />
         ) : (
-          <div className="grid grid-cols-1 gap-x-8 gap-y-5 p-5 md:grid-cols-2 lg:grid-cols-3">
-            {trendSeries.map((m) => (
-              <div key={String(m.key)}>
-                <div className="mb-1 flex items-baseline justify-between">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-ink-faint">{m.label}</span>
-                  <span className="num text-[11px] text-ink-soft">
-                    {m.series.map((s) => {
-                      const last = s.values[s.values.length - 1];
-                      if (last == null) return "—";
-                      return m.money ? fmtMoney(last) : m.pct ? `${Math.round(last * 100)}%` : String(last);
-                    }).join(" · ")}
-                  </span>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-6 p-5 md:grid-cols-2 lg:grid-cols-3">
+            {trendSeries.map((metric) => {
+              const fmt = (v: number) =>
+                metric.money ? fmtMoney(v) : metric.pct ? `${Math.round(v * 100)}%` : String(Math.round(v));
+              return (
+                <div key={String(metric.key)}>
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-ink-faint">{metric.label}</span>
+                    <span className="num text-[11px] text-ink-soft">
+                      {metric.series.map((s) => {
+                        const last = s.values[s.values.length - 1];
+                        if (last == null) return "—";
+                        return fmt(last);
+                      }).join(" · ")}
+                    </span>
+                  </div>
+                  <AreaChart series={metric.series} labels={metric.labels} format={fmt} />
                 </div>
-                <Sparkline series={m.series} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
 
       {/* D3: owner insights */}
-      <Card title="Ask about performance" className="rise rise-3">
+      <Card title="Ask about performance">
         <div className="p-5">
           <div className="flex gap-2">
             <input
@@ -408,7 +425,7 @@ export default function AnalyticsPage() {
             the agent cites metric names and values, and “not in the data” is a valid answer.
           </p>
           {insight && (
-            <div className="mt-4 rounded-md border border-line bg-paper px-4 py-3">
+            <m.div variants={riseIn} initial="hidden" animate="show" className="mt-4 rounded-md border border-line bg-paper px-4 py-3">
               <div className="mb-1.5 flex items-center gap-2 text-[11px] text-ink-faint">
                 <span className={`rounded-full px-2 py-0.5 font-medium ${insight.usedLlm ? "bg-mint text-pine" : "bg-line/70 text-ink-soft"}`}>
                   {insight.usedLlm ? "LLM narrative" : "deterministic z-score template"}
@@ -417,16 +434,25 @@ export default function AnalyticsPage() {
               </div>
               <p className="text-sm leading-relaxed">{insight.answer}</p>
               {insight.highlights.length > 0 && (
-                <ul className="mt-2 space-y-1 border-t border-line/60 pt-2">
+                <StaggerList className="mt-2 space-y-1 border-t border-line/60 pt-2">
                   {insight.highlights.map((h, i) => (
-                    <li key={i} className="num text-xs text-ink-soft">▸ {h}</li>
+                    <StaggerItem key={i} className="num text-xs text-ink-soft">▸ {h}</StaggerItem>
                   ))}
-                </ul>
+                </StaggerList>
               )}
-            </div>
+            </m.div>
           )}
         </div>
       </Card>
     </div>
+  );
+}
+
+
+export default function AnalyticsPageGuarded() {
+  return (
+    <RequireRole roles={["admin"]} kicker="DSO analytics" title="Analytics">
+      <AnalyticsPage />
+    </RequireRole>
   );
 }

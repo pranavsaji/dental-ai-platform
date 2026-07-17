@@ -91,7 +91,7 @@ export default function SchedulePage() {
   return (
     <div>
       <PageTitle kicker="Operations" title="Schedule" />
-      <div className="rise rise-1 mb-4 flex items-center gap-2">
+      <div className="mb-4 flex items-center gap-2">
         <button onClick={() => shiftDay(-1)} className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm hover:border-teal">←</button>
         <input
           type="date" value={date} onChange={(e) => setDate(e.target.value)}

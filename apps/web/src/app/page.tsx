@@ -5,6 +5,10 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { useApp } from "@/components/shell";
 import { Card, Chip, Empty, PageTitle, StatTile, Td, Th, fmtMoney, fmtTime } from "@/components/ui";
+import { m, AnimatePresence, StaggerList, StaggerItem } from "@/components/motion/motion";
+import { fadeSwap } from "@/components/motion/presets";
+import { StatTileSkeleton, TableSkeleton } from "@/components/skeleton";
+import { AmbientBackdrop } from "@/components/three/ambient-backdrop-lazy";
 
 interface Overview {
   location: { id: number; key: string; name: string };
@@ -14,9 +18,10 @@ interface Overview {
   activePatients: number;
   overdueRecalls: number;
   openClaims: number;
-  openClaimsValue: number;
+  // Dollar figures are null for roles without billing access (provider/staff).
+  openClaimsValue: number | null;
   unscheduledTreatment: number;
-  unscheduledTreatmentValue: number;
+  unscheduledTreatmentValue: number | null;
 }
 
 // C1: the digest row from /portal/ops/huddle.
@@ -41,8 +46,37 @@ function localDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// The one-click agent workflows, described in the user's terms: what the agent
+// does and where the output lands. `who` mirrors the API matrix (roles.ts) —
+// campaigns are front-desk work, claim chasing is billing work.
+const AGENT_OPS: Array<{ path: string; name: string; desc: string; who: "campaign" | "billing" }> = [
+  {
+    path: "recall-campaign", name: "Recall campaign", who: "campaign",
+    desc: "Finds patients overdue for hygiene recall and drafts a text offering open slots."
+  },
+  {
+    path: "treatment-outreach", name: "Treatment outreach", who: "campaign",
+    desc: "Reaches out to patients whose planned treatment never got scheduled."
+  },
+  {
+    path: "reminder-sweep", name: "Reminder sweep", who: "campaign",
+    desc: "Prepares tomorrow's appointment reminders for review (or auto-send, per location policy)."
+  },
+  {
+    path: "claim-followup", name: "Claim follow-up", who: "billing",
+    desc: "Picks the oldest open insurance claim, checks it with the payer, and logs the outcome."
+  }
+];
+
 export default function OverviewPage() {
-  const { location } = useApp();
+  const { location, user } = useApp();
+  // Mirrors the API matrix: campaign sends are front-desk work, claim
+  // follow-up is billing work. Buttons a role can't use aren't rendered.
+  const canCampaign = user.role === "admin" || user.role === "staff";
+  const canBillingOps = user.role === "admin" || user.role === "billing";
+  const canHuddle = user.role !== "billing"; // huddle.run: admin|provider|staff
+  const visibleOps = AGENT_OPS.filter((op) =>
+    op.who === "campaign" ? canCampaign : canBillingOps);
   const [ov, setOv] = useState<Overview | null>(null);
   const [sched, setSched] = useState<ScheduleResp | null>(null);
   const [huddle, setHuddle] = useState<Huddle | null>(null);
@@ -117,13 +151,14 @@ export default function OverviewPage() {
   }, [location, huddleDate]);
 
   return (
-    <div>
+    <div className="relative">
+      <AmbientBackdrop height={360} />
       <PageTitle kicker="Control plane" title={location?.name ?? ""} />
 
       {/* C1: morning huddle digest */}
       <Card
         title={`Morning huddle — ${huddleDate}`}
-        className="rise mb-6"
+        className="mb-6"
         action={
           <div className="flex items-center gap-2">
             {huddle && (
@@ -152,7 +187,7 @@ export default function OverviewPage() {
                 Today
               </button>
             )}
-            {huddle && (
+            {huddle && canHuddle && (
               <button
                 onClick={() => emailHuddle()}
                 className="rounded-md border border-line bg-surface px-3 py-1.5 text-xs hover:border-teal hover:text-teal"
@@ -161,7 +196,7 @@ export default function OverviewPage() {
                 ✉ Email me
               </button>
             )}
-            {huddleDate === today && (
+            {huddleDate === today && canHuddle && (
               <button
                 onClick={() => runOps("huddle", "Morning huddle")}
                 className="rounded-md bg-pine px-3 py-1.5 text-xs font-semibold text-white hover:bg-pine-2"
@@ -172,17 +207,20 @@ export default function OverviewPage() {
           </div>
         }
       >
+        <AnimatePresence mode="wait" initial={false}>
         {!huddle ? (
-          <Empty text={huddleDate === today
-            ? "No digest yet today. The cron runs at 6:00 — or generate one now."
-            : `No digest was generated on ${huddleDate}.`} />
+          <m.div key={`empty-${huddleDate}`} variants={fadeSwap} initial="hidden" animate="show" exit="exit">
+            <Empty text={huddleDate === today
+              ? "No digest yet today. The cron runs at 6:00 — or generate one now."
+              : `No digest was generated on ${huddleDate}.`} />
+          </m.div>
         ) : (
-          <div className="px-5 py-4">
+          <m.div key={huddleDate} variants={fadeSwap} initial="hidden" animate="show" exit="exit" className="px-5 py-4">
             <p className="max-w-3xl text-sm leading-relaxed text-ink">{huddle.narrative}</p>
             {huddle.actionItems.length > 0 && (
-              <ul className="mt-4 space-y-1.5">
+              <StaggerList className="mt-4 space-y-1.5">
                 {huddle.actionItems.map((a, i) => (
-                  <li key={i} className="flex items-center gap-3 text-[13px]">
+                  <StaggerItem key={i} className="flex items-center gap-3 text-[13px]">
                     <span className={`inline-block h-1.5 w-1.5 rounded-full ${
                       a.priority === "high" || a.priority === "urgent" ? "bg-coral" : "bg-teal"
                     }`} />
@@ -193,79 +231,132 @@ export default function OverviewPage() {
                     >
                       → task
                     </button>
-                  </li>
+                  </StaggerItem>
                 ))}
-              </ul>
+              </StaggerList>
             )}
             {taskMsg && <div className="mt-3 text-xs text-teal">{taskMsg}</div>}
-          </div>
+          </m.div>
         )}
+        </AnimatePresence>
       </Card>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile label="Scheduled today" value={ov?.todayScheduled ?? "—"} detail="confirmed & unconfirmed" delay="rise-1" />
-        <StatTile label="Next 7 days" value={ov?.upcoming7d ?? "—"} detail="upcoming appointments" delay="rise-2" />
-        <StatTile
-          label="Broken · 7 days" value={ov?.broken7d ?? "—"}
-          detail="cancellations detected via edge sync"
-          tone={ov && ov.broken7d > 0 ? "alert" : "default"} delay="rise-3"
-        />
-        <StatTile
-          label="Overdue recalls" value={ov?.overdueRecalls ?? "—"}
-          detail="reactivation candidates"
-          tone={ov && ov.overdueRecalls > 0 ? "warn" : "default"} delay="rise-4"
-        />
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile label="Active patients" value={ov?.activePatients ?? "—"} delay="rise-2" />
-        <StatTile
-          label="Open claims" value={ov?.openClaims ?? "—"}
-          detail={ov ? `${fmtMoney(ov.openClaimsValue)} outstanding` : undefined}
-          tone={ov && ov.openClaims > 0 ? "warn" : "default"} delay="rise-3"
-        />
-        <StatTile
-          label="Unscheduled treatment" value={ov ? fmtMoney(ov.unscheduledTreatmentValue) : "—"}
-          detail={ov ? `${ov.unscheduledTreatment} planned procedures without a visit` : undefined}
-          tone={ov && ov.unscheduledTreatmentValue > 0 ? "warn" : "good"} delay="rise-3"
-        />
-        <div className="rise rise-4 flex flex-col justify-center gap-2 rounded-lg border border-dashed border-sage/70 bg-mint/20 px-5 py-4">
-          <div className="text-[11px] uppercase tracking-[0.18em] text-teal">Agent operations</div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => runOps("recall-campaign", "Recall campaign")}
-              className="rounded-md bg-pine px-3.5 py-1.5 text-[13px] font-semibold text-white hover:bg-pine-2"
-            >
-              ✳ Recall campaign
-            </button>
-            <button
-              onClick={() => runOps("treatment-outreach", "Treatment outreach")}
-              className="rounded-md bg-pine px-3.5 py-1.5 text-[13px] font-semibold text-white hover:bg-pine-2"
-            >
-              ✳ Treatment outreach
-            </button>
-            <button
-              onClick={() => runOps("reminder-sweep", "Reminder sweep")}
-              className="rounded-md border border-pine/30 bg-surface px-3.5 py-1.5 text-[13px] font-semibold text-pine hover:border-teal"
-            >
-              ✳ Reminder sweep
-            </button>
-            <button
-              onClick={() => runOps("claim-followup", "Claim follow-up")}
-              className="rounded-md border border-pine/30 bg-surface px-3.5 py-1.5 text-[13px] font-semibold text-pine hover:border-teal"
-            >
-              ✳ Claim follow-up
-            </button>
+      {!ov ? (
+        <>
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {Array.from({ length: 4 }, (_, i) => <StatTileSkeleton key={i} />)}
           </div>
-          {opsMsg && <div className="text-xs text-ink-soft">{opsMsg}</div>}
+          <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-3">
+            {Array.from({ length: 3 }, (_, i) => <StatTileSkeleton key={i} />)}
+          </div>
+        </>
+      ) : (
+        <>
+          <StaggerList className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <StaggerItem>
+              <StatTile label="Scheduled today" value={ov.todayScheduled} detail="confirmed & unconfirmed" />
+            </StaggerItem>
+            <StaggerItem>
+              <StatTile label="Next 7 days" value={ov.upcoming7d} detail="upcoming appointments" />
+            </StaggerItem>
+            <StaggerItem>
+              <StatTile
+                label="Broken · 7 days" value={ov.broken7d}
+                detail="cancellations detected via edge sync"
+                tone={ov.broken7d > 0 ? "alert" : "default"}
+              />
+            </StaggerItem>
+            <StaggerItem>
+              <StatTile
+                label="Overdue recalls" value={ov.overdueRecalls}
+                detail="reactivation candidates"
+                tone={ov.overdueRecalls > 0 ? "warn" : "default"}
+              />
+            </StaggerItem>
+          </StaggerList>
+          <StaggerList className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-3">
+            <StaggerItem>
+              <StatTile label="Active patients" value={ov.activePatients} />
+            </StaggerItem>
+            <StaggerItem>
+              <StatTile
+                label="Open claims" value={ov.openClaims}
+                detail={ov.openClaimsValue != null ? `${fmtMoney(ov.openClaimsValue)} outstanding` : undefined}
+                tone={ov.openClaims > 0 ? "warn" : "default"}
+              />
+            </StaggerItem>
+            <StaggerItem>
+              <StatTile
+                label="Unscheduled treatment"
+                value={ov.unscheduledTreatmentValue != null ? ov.unscheduledTreatmentValue : ov.unscheduledTreatment}
+                format={ov.unscheduledTreatmentValue != null ? fmtMoney : undefined}
+                detail={`${ov.unscheduledTreatment} planned procedures without a visit`}
+                tone={ov.unscheduledTreatment > 0 ? "warn" : "good"}
+              />
+            </StaggerItem>
+          </StaggerList>
+        </>
+      )}
+
+      {visibleOps.length > 0 && (
+        <div className="mt-8">
+          <Card
+            title="Agent operations"
+            action={<span className="text-xs text-ink-faint">Every run is audited · patient messages wait in Approvals</span>}
+          >
+            <p className="border-b border-line/60 px-5 pb-3 pt-4 text-[13px] leading-relaxed text-ink-soft">
+              One-click AI workflows for this location. Each one drafts its own patient
+              outreach or payer follow-up; nothing reaches a patient without approval
+              unless this location's policy allows auto-send.
+            </p>
+            <div className="grid grid-cols-1 divide-y divide-line/50 md:grid-cols-2 md:divide-y-0">
+              {visibleOps.map((op) => (
+                <div
+                  key={op.path}
+                  className="group relative flex items-center gap-4 overflow-hidden px-5 py-4"
+                >
+                  <div
+                    aria-hidden
+                    className="absolute inset-y-0 left-0 w-0 bg-mint/30 transition-all duration-300 group-hover:w-full"
+                  />
+                  <div className="relative min-w-0 flex-1">
+                    <div className="text-[13.5px] font-semibold text-ink">{op.name}</div>
+                    <div className="mt-0.5 text-xs leading-relaxed text-ink-faint">{op.desc}</div>
+                  </div>
+                  <m.button
+                    whileTap={{ scale: 0.96 }}
+                    onClick={() => runOps(op.path, op.name)}
+                    className="relative shrink-0 rounded-md bg-pine px-3.5 py-1.5 text-[13px] font-semibold text-white transition hover:bg-pine-2 hover:shadow-[var(--shadow-sm)]"
+                  >
+                    ✳ Run
+                  </m.button>
+                </div>
+              ))}
+            </div>
+            <AnimatePresence>
+              {opsMsg && (
+                <m.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden border-t border-line/60 bg-mint/20"
+                >
+                  <div className="px-5 py-2.5 text-xs text-ink-soft">{opsMsg}</div>
+                </m.div>
+              )}
+            </AnimatePresence>
+          </Card>
         </div>
-      </div>
+      )}
 
       <div className="mt-8 grid gap-5">
         <Card
           title={`Today — ${sched?.date ?? ""}`}
           action={<Link href="/schedule" className="text-xs font-medium text-teal hover:underline">Full schedule →</Link>}
         >
-          {!sched || sched.appointments.length === 0 ? (
+          {!sched ? (
+            <TableSkeleton rows={5} cols={6} />
+          ) : sched.appointments.length === 0 ? (
             <Empty text="No appointments today." />
           ) : (
             <div className="overflow-x-auto">

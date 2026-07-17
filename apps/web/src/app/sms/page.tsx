@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "@/components/shell";
 import { Card, Empty, PageTitle } from "@/components/ui";
+import { RequireRole } from "@/components/require-role";
 
 interface Sms {
   id: number; patientSourceId: number; direction: "outbound" | "inbound";
@@ -29,7 +30,7 @@ const POLICY_LABELS: Record<string, string> = {
 
 // Simulated comms gateway console: outbound SMS + email sent by agents appear
 // here; on the SMS tab you reply *as the patient* to drive workflows forward.
-export default function SmsPage() {
+function SmsPage() {
   const { location } = useApp();
   const [tab, setTab] = useState<"sms" | "email">("sms");
   const [rows, setRows] = useState<Sms[]>([]);
@@ -69,12 +70,12 @@ export default function SmsPage() {
   return (
     <div>
       <PageTitle kicker="Simulator" title="Comms Console" />
-      <p className="rise rise-1 -mt-3 mb-4 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-4 max-w-2xl text-sm text-ink-soft">
         A stand-in for Twilio and SMTP. Agent outreach lands here; on the SMS tab, type a
         reply to act as the patient. Blocked and queued messages show their policy reason.
       </p>
 
-      <div className="rise rise-1 mb-4 flex gap-1">
+      <div className="mb-4 flex gap-1">
         {(["sms", "email"] as const).map((t) => (
           <button
             key={t}
@@ -195,5 +196,14 @@ export default function SmsPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+
+export default function SmsPageGuarded() {
+  return (
+    <RequireRole roles={["admin", "billing", "staff"]} kicker="Simulator" title="Comms Console">
+      <SmsPage />
+    </RequireRole>
   );
 }

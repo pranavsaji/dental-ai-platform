@@ -4,6 +4,9 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { API_URL, api, clearSession, getUser, setSession, type Location, type SessionUser } from "@/lib/api";
+import { m, AnimatePresence } from "@/components/motion/motion";
+import { scaleIn, SPRING_SOFT } from "@/components/motion/presets";
+import { Skeleton } from "@/components/skeleton";
 
 interface AppCtx {
   user: SessionUser;
@@ -19,16 +22,19 @@ export const useApp = () => {
   return v;
 };
 
-const NAV = [
+// Sidebar mirrors the API's RBAC matrix (apps/api/src/auth/roles.ts). Hiding
+// a link is UX only — the API enforces the real gate on every endpoint.
+const NAV: { href: string; label: string; glyph: string; roles?: string[] }[] = [
   { href: "/", label: "Overview", glyph: "◳" },
+  { href: "/dashboard", label: "Org Dashboard", glyph: "▦", roles: ["admin"] },
   { href: "/schedule", label: "Schedule", glyph: "▤" },
   { href: "/patients", label: "Patients", glyph: "◍" },
-  { href: "/billing", label: "Billing", glyph: "◈" },
-  { href: "/analytics", label: "Analytics", glyph: "∿" },
-  { href: "/approvals", label: "Approvals", glyph: "✳" },
+  { href: "/billing", label: "Billing", glyph: "◈", roles: ["admin", "billing"] },
+  { href: "/analytics", label: "Analytics", glyph: "∿", roles: ["admin"] },
+  { href: "/approvals", label: "Approvals", glyph: "✳", roles: ["admin", "billing", "staff"] },
   { href: "/tasks", label: "Tasks", glyph: "☰" },
-  { href: "/sms", label: "SMS Console", glyph: "◗" },
-  { href: "/audit", label: "Audit Trail", glyph: "≡" }
+  { href: "/sms", label: "SMS Console", glyph: "◗", roles: ["admin", "billing", "staff"] },
+  { href: "/audit", label: "Audit Trail", glyph: "≡", roles: ["admin"] }
 ];
 
 // Integration provenance badge (A1): keeps the header honest about whether
@@ -126,14 +132,21 @@ function NotificationBell({ locationId, onEvent }: {
     return () => es.close();
   }, [locationId, onEvent]);
 
-  // Close on outside click.
+  // Close on outside click or Escape.
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   const unread = items.filter((n) => new Date(n.createdAt).getTime() > seenAt).length;
@@ -150,16 +163,35 @@ function NotificationBell({ locationId, onEvent }: {
         className="relative rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm shadow-sm transition hover:border-teal"
         onClick={() => setOpen((o) => !o)}
         title="Notifications"
+        aria-expanded={open}
+        aria-haspopup="true"
       >
         ◔
-        {unread > 0 && (
-          <span className="num absolute -right-1.5 -top-1.5 rounded-full bg-coral px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
-            {unread > 9 ? "9+" : unread}
-          </span>
-        )}
+        <AnimatePresence>
+          {unread > 0 && (
+            <m.span
+              key={unread}
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.5, opacity: 0 }}
+              transition={SPRING_SOFT}
+              className="num absolute -right-1.5 -top-1.5 rounded-full bg-coral px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+            >
+              {unread > 9 ? "9+" : unread}
+            </m.span>
+          )}
+        </AnimatePresence>
       </button>
+      <AnimatePresence>
       {open && (
-        <div className="absolute right-0 top-10 z-50 w-96 rounded-lg border border-line bg-paper shadow-xl">
+        <m.div
+          variants={scaleIn}
+          initial="hidden"
+          animate="show"
+          exit="exit"
+          style={{ transformOrigin: "top right" }}
+          className="glass absolute right-0 top-10 z-50 w-96 rounded-lg border border-line shadow-[var(--shadow-lg)]"
+        >
           <div className="flex items-center justify-between border-b border-line/70 px-4 py-2.5">
             <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-soft">
               Notifications
@@ -197,8 +229,9 @@ function NotificationBell({ locationId, onEvent }: {
               );
             })}
           </div>
-        </div>
+        </m.div>
       )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -211,7 +244,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [locationId, setLocationIdState] = useState<number | null>(null);
   const [openTasks, setOpenTasks] = useState<number>(0);
   const [taskRefresh, setTaskRefresh] = useState(0);
+  const [scrolled, setScrolled] = useState(false);
   const isLogin = pathname === "/login" || pathname.startsWith("/login/");
+
+  // Header drops a soft shadow once content scrolls beneath it.
+  useEffect(() => {
+    if (isLogin) return;
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [isLogin]);
 
   useEffect(() => {
     if (isLogin) return;
@@ -267,24 +310,33 @@ export function Shell({ children }: { children: React.ReactNode }) {
   if (isLogin) return <>{children}</>;
   if (!ctx || !ctx.location) {
     return (
-      <div className="grid min-h-screen place-items-center text-ink-soft">
-        <div className="text-sm tracking-widest uppercase animate-pulse">Loading…</div>
+      <div className="grid min-h-screen place-items-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="font-display text-3xl font-semibold tracking-tight text-pine">Dental AI</div>
+          <div className="w-48 space-y-2">
+            <Skeleton className="h-2 w-full" />
+            <Skeleton className="h-2 w-3/4" />
+            <Skeleton className="h-2 w-5/6" />
+          </div>
+        </div>
       </div>
     );
   }
 
-  const nav = ctx.user.role === "admin"
-    ? [
-        ...NAV,
-        { href: "/admin/users", label: "Users", glyph: "⛭" },
-        { href: "/admin/locations", label: "Locations", glyph: "⌖" }
-      ]
-    : NAV;
+  const nav = [
+    ...NAV.filter((n) => !n.roles || n.roles.includes(ctx.user.role)),
+    ...(ctx.user.role === "admin"
+      ? [
+          { href: "/admin/users", label: "Users", glyph: "⛭" },
+          { href: "/admin/locations", label: "Locations", glyph: "⌖" }
+        ]
+      : [])
+  ];
 
   return (
     <Ctx.Provider value={ctx}>
       <div className="grain flex min-h-screen">
-        <aside className="fixed inset-y-0 left-0 flex w-56 flex-col bg-pine text-mint">
+        <aside className="fixed inset-y-0 left-0 flex w-56 flex-col border-r border-white/5 bg-gradient-to-b from-pine to-pine-deep text-mint">
           <div className="px-6 pb-8 pt-7">
             <div className="font-display text-3xl font-semibold tracking-tight text-white">Dental AI</div>
             <div className="mt-1 text-[11px] uppercase tracking-[0.22em] text-sage">
@@ -298,18 +350,31 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={n.href}
                   href={n.href}
-                  className={`flex items-center gap-3 rounded-md px-3 py-2 text-[13.5px] transition-colors ${
-                    active
-                      ? "bg-pine-2 text-white shadow-[inset_2px_0_0_0_theme(colors.mint-deep)]"
-                      : "text-mint/75 hover:bg-pine-2/60 hover:text-white"
+                  className={`group relative flex items-center gap-3 rounded-md px-3 py-2 text-[13.5px] transition-colors ${
+                    active ? "text-white" : "text-mint/75 hover:bg-pine-2/60 hover:text-white"
                   }`}
                 >
-                  <span className="w-4 text-center opacity-80">{n.glyph}</span>
-                  <span className="flex-1">{n.label}</span>
+                  {active && (
+                    <m.span
+                      layoutId="nav-pill"
+                      transition={SPRING_SOFT}
+                      className="absolute inset-0 rounded-md bg-pine-2 shadow-[inset_2px_0_0_0_theme(colors.mint-deep)]"
+                    />
+                  )}
+                  <span className="relative w-4 text-center opacity-80 transition-transform duration-200 group-hover:scale-110">
+                    {n.glyph}
+                  </span>
+                  <span className="relative flex-1">{n.label}</span>
                   {n.href === "/tasks" && openTasks > 0 && (
-                    <span className="num rounded-full bg-mint-deep/90 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-pine">
+                    <m.span
+                      key={openTasks}
+                      initial={{ scale: 0.6 }}
+                      animate={{ scale: 1 }}
+                      transition={SPRING_SOFT}
+                      className="num relative rounded-full bg-mint-deep/90 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-pine"
+                    >
                       {openTasks}
-                    </span>
+                    </m.span>
                   )}
                 </Link>
               );
@@ -335,7 +400,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
         {/* min-w-0: let wide tables scroll inside overflow-x-auto instead of
             stretching the flex item (and the whole page) past the viewport. */}
         <div className="ml-56 min-w-0 flex-1">
-          <header className="sticky top-0 z-40 flex items-center justify-between border-b border-line bg-paper/90 px-8 py-3 backdrop-blur">
+          <header
+            className={`glass sticky top-0 z-40 flex items-center justify-between border-b border-line px-8 py-3 transition-shadow duration-300 ${
+              scrolled ? "shadow-[var(--shadow-sm)]" : ""
+            }`}
+          >
             <div className="text-[11px] uppercase tracking-[0.2em] text-ink-faint">
               Lone Star Dental Group
             </div>

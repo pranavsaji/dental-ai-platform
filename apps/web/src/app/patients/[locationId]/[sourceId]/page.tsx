@@ -59,9 +59,13 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
   const [elig, setElig] = useState<EligCheck | null>(null);
   const [stmtBusy, setStmtBusy] = useState(false);
   const [stmtMsg, setStmtMsg] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    api<Timeline>(`/portal/patients/${locationId}/${sourceId}`).then(setData).catch(() => {});
+    api<Timeline>(`/portal/patients/${locationId}/${sourceId}`)
+      .then(setData)
+      // 403 = RBAC (e.g. a doctor opening another provider's patient) — say so.
+      .catch((e) => setLoadError((e as Error).message || "Could not load chart"));
     api<EligCheck[]>(`/portal/billing/eligibility?locationId=${locationId}&patients=${sourceId}`)
       .then((rows) => setElig(rows[0] ?? null))
       .catch(() => {});
@@ -97,13 +101,21 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
     }
   }
 
+  if (loadError) {
+    return (
+      <div className="py-20 text-center text-sm text-ink-soft">
+        <div className="mb-2 text-lg">Chart unavailable</div>
+        <div className="text-ink-faint">{loadError}</div>
+      </div>
+    );
+  }
   if (!data) return <div className="py-20 text-center text-sm text-ink-faint animate-pulse">Loading chart…</div>;
   const p = data.patient;
 
   return (
     <div>
       <PageTitle kicker={`Patient chart · ${data.location.name}`} title={`${p.lastName}, ${p.firstName}`} />
-      <div className="rise rise-1 mb-6 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-ink-soft">
+      <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-ink-soft">
         <span>DOB <span className="num">{fmtDate(p.birthdate)}</span></span>
         <span>{p.gender}</span>
         <span className="num">{p.wirelessPhone}</span>
@@ -115,7 +127,7 @@ export default function PatientPage({ params }: { params: Promise<{ locationId: 
         </span>
       </div>
 
-      <div className="rise rise-2 mb-5 rounded-lg border border-sage/60 bg-mint/25 p-5">
+      <div className="mb-5 rounded-lg border border-sage/60 bg-mint/25 p-5">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-[11px] uppercase tracking-[0.18em] text-teal">Clinical agent</div>

@@ -38,9 +38,12 @@ export const users = pgTable("users", {
   orgId: bigint("org_id", { mode: "number" }).notNull().references(() => orgs.id),
   email: text("email").notNull(),
   name: text("name").notNull(),
-  role: text("role").notNull(), // 'admin' | 'provider' | 'staff'
+  role: text("role").notNull(), // 'admin' | 'provider' | 'billing' | 'staff'
   // null = all locations in org; set = restricted to one location
   locationId: bigint("location_id", { mode: "number" }),
+  // provider-role users only: the providers.source_id (PMS ProvNum) at their
+  // pinned location. Scopes schedule/patients reads to "my patients".
+  providerSourceId: bigint("provider_source_id", { mode: "number" }),
   // scrypt salt:hash; null for SSO-only accounts (no password login)
   passwordHash: text("password_hash"),
   // F3: same-day termination — a disabled user's JWT is rejected at the guard

@@ -105,18 +105,18 @@ export default function AdminLocationsPage() {
   return (
     <>
       <PageTitle kicker="Administration" title="Locations" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         Per-location policy and settings. Integration provenance is read-only — the edge
         synchronizer reports it via heartbeat.
       </p>
 
       {notice && (
-        <div className="rise mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-3 text-sm text-pine">
+        <div className="mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-3 text-sm text-pine">
           {notice}
         </div>
       )}
       {error && (
-        <div className="rise mb-4 rounded-md border border-coral/40 bg-coral-soft px-4 py-3 text-sm text-coral">
+        <div className="mb-4 rounded-md border border-coral/40 bg-coral-soft px-4 py-3 text-sm text-coral">
           {error}
         </div>
       )}

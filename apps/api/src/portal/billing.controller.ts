@@ -7,7 +7,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { claims, patients, procedures } from "@dental/db";
 import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
-import { ALL_ROLES, assertRole } from "../auth/roles";
+import { assertCan } from "../auth/roles";
 import { AuditService } from "../audit.service";
 import { PortalService } from "./portal.service";
 import { BillingService } from "./billing.service";
@@ -38,7 +38,7 @@ export class BillingController {
     @Param("patientSourceId", ParseIntPipe) patientSourceId: number,
     @Query("locationId") locationId?: string
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: patient-facing send — front desk's job
+    assertCan(user, "statements.send"); // patient-facing balance notice
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const [pat] = await this.db
       .select({ firstName: patients.firstName })
@@ -83,6 +83,7 @@ export class BillingController {
 
   @Get("summary")
   async summary(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.billing.summary(user.orgId, loc.id);
   }
@@ -94,18 +95,21 @@ export class BillingController {
     @Query("bucket") bucket?: string,
     @Query("sort") sort?: string
   ) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.billing.listClaims(loc.id, { bucket, sort });
   }
 
   @Get("denials")
   async denials(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.billing.listDenials(loc.id);
   }
 
   @Get("preauths")
   async preauths(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.billing.listPreauths(loc.id);
   }
@@ -113,6 +117,7 @@ export class BillingController {
   // Unscheduled treatment backlog (C5): the revenue-recovery worklist.
   @Get("unscheduled")
   async unscheduled(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.billing.listUnscheduledTreatment(loc.id);
   }
@@ -126,6 +131,7 @@ export class BillingController {
     @Query("days") days?: string,
     @Query("type") type?: string
   ) {
+    assertCan(user, "billing.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const n = Math.max(1, Math.min(365, Number(days) || 30));
     const t = type === "insurance" || type === "patient" ? type : undefined;
@@ -140,6 +146,7 @@ export class BillingController {
     @Query("locationId") locationId?: string,
     @Query("patients") patientsCsv?: string
   ) {
+    assertCan(user, "eligibility.read"); // schedule badges need front desk + provider
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const ids = patientsCsv
       ? patientsCsv.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0)
@@ -155,7 +162,7 @@ export class BillingController {
     @Param("sourceId", ParseIntPipe) sourceId: number,
     @Query("locationId") locationId?: string
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: billing ops — all in-location roles
+    assertCan(user, "billing.act");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `claimfu-${loc.key}-c${sourceId}-${randomUUID().slice(0, 6)}`;
     try {
@@ -177,7 +184,7 @@ export class BillingController {
   // nightly cron. Runs the same insuranceVerification workflow.
   @Post("eligibility-sweep")
   async eligibilitySweep(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
-    assertRole(user, ...ALL_ROLES); // G4: billing ops — all in-location roles
+    assertCan(user, "billing.act");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const workflowId = `elig-manual-${loc.key}-${randomUUID().slice(0, 8)}`;
     try {

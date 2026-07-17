@@ -6,6 +6,8 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
+export type Role = "admin" | "provider" | "billing" | "staff";
+
 export interface SessionUser {
   sub: number;
   orgId: number;
@@ -13,6 +15,8 @@ export interface SessionUser {
   name: string;
   role: string;
   locationId: number | null;
+  // provider-role users: their linked PMS provider record (scopes their reads)
+  providerSourceId?: number | null;
 }
 
 export interface Location {

@@ -7,9 +7,26 @@ import {
 } from "@dental/db";
 import { DB, type Db } from "../db";
 import type { SessionUser } from "../auth/auth";
+import { assertCan, can } from "../auth/roles";
 
 // All portal reads are tenancy-scoped here: orgId always comes from the JWT,
-// and a location-restricted user cannot query another location.
+// and a location-restricted user cannot query another location. Provider-role
+// users carry a providerSourceId (their PMS ProvNum) that additionally scopes
+// schedule/patient reads to their own appointments and patients.
+
+/** The PMS provider id a doctor's reads are scoped to, or null = unscoped.
+ *  Fails closed: an unlinked provider account gets a 403, not the whole
+ *  location's PHI (admin invite/update enforces the link, so this only fires
+ *  for stale sessions or hand-edited rows). */
+export function providerScopeOf(user: SessionUser): number | null {
+  if (user.role !== "provider") return null;
+  if (user.providerSourceId == null) {
+    throw new ForbiddenException(
+      "Provider account is not linked to a PMS provider record — sign out and back in, or ask an admin"
+    );
+  }
+  return user.providerSourceId;
+}
 
 @Injectable()
 export class PortalService {
@@ -54,7 +71,11 @@ export class PortalService {
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
     const todayStr = now.toISOString().slice(0, 10);
 
-    const scope = eq(appointments.locationId, loc.id);
+    // A provider's overview counts only their own appointments and patients.
+    const psid = providerScopeOf(user);
+    const scope = psid != null
+      ? and(eq(appointments.locationId, loc.id), eq(appointments.providerSourceId, psid))
+      : eq(appointments.locationId, loc.id);
     const [todayAppts] = await this.db.select({ n: count() }).from(appointments)
       .where(and(scope, eq(appointments.status, "scheduled"), gte(appointments.startsAt, dayStart), lte(appointments.startsAt, dayEnd)));
     const [upcoming] = await this.db.select({ n: count() }).from(appointments)
@@ -62,7 +83,10 @@ export class PortalService {
     const [brokenRecent] = await this.db.select({ n: count() }).from(appointments)
       .where(and(scope, eq(appointments.status, "broken"), gte(appointments.sourceStamp, weekAgo)));
     const [patientCount] = await this.db.select({ n: count() }).from(patients)
-      .where(and(eq(patients.locationId, loc.id), eq(patients.status, "active")));
+      .where(and(
+        eq(patients.locationId, loc.id), eq(patients.status, "active"),
+        psid != null ? eq(patients.primaryProviderSourceId, psid) : sql`true`
+      ));
     const [overdueRecalls] = await this.db.select({ n: count() }).from(recalls)
       .where(and(eq(recalls.locationId, loc.id), eq(recalls.isDisabled, false), lt(recalls.dateDue, todayStr)));
     const [openClaims] = await this.db.select({ n: count(), fees: sum(claims.claimFee) }).from(claims)
@@ -83,6 +107,9 @@ export class PortalService {
         notInArray(procedures.patientSourceId, withUpcoming)
       ));
 
+    // Dollar figures are billing surface — counts stay visible to everyone,
+    // amounts only to roles that can read the billing worklists.
+    const money = can(user, "billing.read");
     return {
       location: { id: loc.id, key: loc.key, name: loc.name },
       todayScheduled: todayAppts.n,
@@ -91,9 +118,9 @@ export class PortalService {
       activePatients: patientCount.n,
       overdueRecalls: overdueRecalls.n,
       openClaims: openClaims.n,
-      openClaimsValue: Number(openClaims.fees ?? 0),
+      openClaimsValue: money ? Number(openClaims.fees ?? 0) : null,
       unscheduledTreatment: unscheduled.n,
-      unscheduledTreatmentValue: Number(unscheduled.fees ?? 0)
+      unscheduledTreatmentValue: money ? Number(unscheduled.fees ?? 0) : null
     };
   }
 
@@ -145,7 +172,12 @@ export class PortalService {
       .where(and(
         eq(appointments.locationId, loc.id),
         gte(appointments.startsAt, day),
-        lte(appointments.startsAt, dayEnd)
+        lte(appointments.startsAt, dayEnd),
+        // Doctors see their own column of the day, not the whole book.
+        (() => {
+          const psid = providerScopeOf(user);
+          return psid != null ? eq(appointments.providerSourceId, psid) : sql`true`;
+        })()
       ))
       .orderBy(asc(appointments.startsAt));
 
@@ -154,9 +186,25 @@ export class PortalService {
     return { location: { id: loc.id, key: loc.key, name: loc.name }, date: day.toISOString().slice(0, 10), operatories: ops, appointments: rows };
   }
 
+  /** "My patient" = primary provider is me, or I have an appointment with them. */
+  private myPatientFilter(locationId: number, psid: number) {
+    const seenByMe = this.db
+      .select({ pat: appointments.patientSourceId })
+      .from(appointments)
+      .where(and(
+        eq(appointments.locationId, locationId),
+        eq(appointments.providerSourceId, psid)
+      ));
+    return or(
+      eq(patients.primaryProviderSourceId, psid),
+      inArray(patients.sourceId, seenByMe)
+    );
+  }
+
   async searchPatients(user: SessionUser, locationId: number | undefined, q: string) {
     const loc = await this.resolveLocation(user, locationId);
     const term = `%${q.trim()}%`;
+    const psid = providerScopeOf(user);
     return this.db
       .select({
         sourceId: patients.sourceId,
@@ -171,14 +219,46 @@ export class PortalService {
       .from(patients)
       .where(and(
         eq(patients.locationId, loc.id),
-        q ? or(ilike(patients.lastName, term), ilike(patients.firstName, term)) : sql`true`
+        q ? or(ilike(patients.lastName, term), ilike(patients.firstName, term)) : sql`true`,
+        psid != null ? this.myPatientFilter(loc.id, psid) : sql`true`
       ))
       .orderBy(asc(patients.lastName))
       .limit(25);
   }
 
+  /** Throws unless a provider-scoped user is linked to this patient. */
+  async assertPatientAccess(user: SessionUser, locationId: number, patientSourceId: number): Promise<void> {
+    const psid = providerScopeOf(user);
+    if (psid == null) return;
+    const [row] = await this.db
+      .select({ sourceId: patients.sourceId })
+      .from(patients)
+      .where(and(
+        eq(patients.locationId, locationId),
+        eq(patients.sourceId, patientSourceId),
+        this.myPatientFilter(locationId, psid)
+      ));
+    if (!row) throw new ForbiddenException("Not your patient — provider accounts see only their own patients");
+  }
+
+  /** Of `candidateIds`, the ones a provider-scoped user may see (all, if unscoped). */
+  async allowedPatientIds(user: SessionUser, locationId: number, candidateIds: number[]): Promise<Set<number>> {
+    const psid = providerScopeOf(user);
+    if (psid == null || candidateIds.length === 0) return new Set(candidateIds);
+    const rows = await this.db
+      .select({ sourceId: patients.sourceId })
+      .from(patients)
+      .where(and(
+        eq(patients.locationId, locationId),
+        inArray(patients.sourceId, candidateIds),
+        this.myPatientFilter(locationId, psid)
+      ));
+    return new Set(rows.map((r) => r.sourceId));
+  }
+
   async patientTimeline(user: SessionUser, locationId: number, sourceId: number) {
     const loc = await this.resolveLocation(user, locationId);
+    await this.assertPatientAccess(user, loc.id, sourceId);
     const [patient] = await this.db.select().from(patients)
       .where(and(eq(patients.locationId, loc.id), eq(patients.sourceId, sourceId)));
     if (!patient) throw new NotFoundException("Patient not found");
@@ -229,9 +309,7 @@ export class PortalService {
   }
 
   async auditEntries(user: SessionUser, limit = 100) {
-    if (user.role !== "admin" && user.role !== "provider") {
-      throw new ForbiddenException("Audit log requires admin or provider role");
-    }
+    assertCan(user, "audit.read"); // compliance surface — the owner's view
     return this.db.select().from(auditLog)
       .where(eq(auditLog.orgId, user.orgId))
       .orderBy(desc(auditLog.at))

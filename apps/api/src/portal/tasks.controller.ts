@@ -2,7 +2,7 @@ import {
   BadRequestException, Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards
 } from "@nestjs/common";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
-import { ALL_ROLES, assertRole } from "../auth/roles";
+import { assertCan } from "../auth/roles";
 import { PortalService } from "./portal.service";
 import { TasksService } from "./tasks.service";
 import { TemporalService } from "../temporal/temporal.service";
@@ -25,12 +25,14 @@ export class TasksController {
     @Query("status") status?: string,
     @Query("type") type?: string
   ) {
+    assertCan(user, "tasks.act");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.tasksService.list(user.orgId, loc.id, { status, type });
   }
 
   @Get("summary")
   async summary(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "tasks.act");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.tasksService.summary(user.orgId, loc.id);
   }
@@ -44,7 +46,7 @@ export class TasksController {
       resourceType?: string; resourceId?: string;
     }
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: task queue is a shared surface
+    assertCan(user, "tasks.act"); // task queue is a shared surface
     if (!body.title?.trim()) throw new BadRequestException("title required");
     const loc = await this.portal.resolveLocation(user, body.locationId);
     const id = await this.tasksService.create({
@@ -68,7 +70,7 @@ export class TasksController {
     @Param("id", ParseIntPipe) id: number,
     @Query("locationId") locationId?: string
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: task queue is a shared surface
+    assertCan(user, "tasks.act"); // task queue is a shared surface
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     await this.tasksService.claim(user.orgId, loc.id, id, user.sub, user.email);
     return { ok: true };
@@ -84,7 +86,7 @@ export class TasksController {
     @Body() body: { body?: string },
     @Query("locationId") locationId?: string
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: patient-facing send — front desk's job
+    assertCan(user, "tasks.act"); // reply is task work; SMS policy gates the send
     const text = body.body?.trim();
     if (!text) throw new BadRequestException("reply body required");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
@@ -121,7 +123,7 @@ export class TasksController {
     @Body() body: { outcome?: "done" | "dismissed" },
     @Query("locationId") locationId?: string
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: task queue is a shared surface
+    assertCan(user, "tasks.act"); // task queue is a shared surface
     const outcome = body.outcome ?? "done";
     if (outcome !== "done" && outcome !== "dismissed") {
       throw new BadRequestException("outcome must be done or dismissed");

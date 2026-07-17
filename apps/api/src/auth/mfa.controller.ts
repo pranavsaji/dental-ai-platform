@@ -57,7 +57,8 @@ export class MfaController {
   private sessionFor(user: typeof users.$inferSelect) {
     return {
       sub: user.id, orgId: user.orgId, email: user.email,
-      name: user.name, role: user.role, locationId: user.locationId
+      name: user.name, role: user.role, locationId: user.locationId,
+      providerSourceId: user.providerSourceId ?? null
     };
   }
 

@@ -45,23 +45,39 @@ for (const s of siteDefs) {
 const locs = await db.select().from(schema.locations);
 const locA = locs.find((l) => l.key === "a")!;
 
+// One demo account per role. Dr. Patel is pinned to Austin and linked to the
+// PMS provider record DDS1 (ProvNum 1) there — that link is what scopes her
+// reads to her own schedule and patients. Billing is org-wide (RCM works both
+// sites); front desk is pinned to Austin.
 const userDefs = [
-  { email: "admin@dental.dev", name: "Dana Admin", role: "admin", locationId: null as number | null },
-  { email: "frontdesk@dental.dev", name: "Frank Desk", role: "staff", locationId: locA.id },
-  { email: "drpatel@dental.dev", name: "Dr. Priya Patel", role: "provider", locationId: null }
+  { email: "admin@dental.dev", name: "Dana Admin", role: "admin", locationId: null as number | null, providerSourceId: null as number | null },
+  { email: "frontdesk@dental.dev", name: "Frank Desk", role: "staff", locationId: locA.id, providerSourceId: null },
+  { email: "drpatel@dental.dev", name: "Dr. Priya Patel", role: "provider", locationId: locA.id, providerSourceId: 1 },
+  { email: "billing@dental.dev", name: "Bella Reyes", role: "billing", locationId: null, providerSourceId: null }
 ];
 for (const u of userDefs) {
-  const existing = await db.select().from(schema.users).where(eq(schema.users.email, u.email));
-  if (existing.length === 0) {
+  const [existing] = await db.select().from(schema.users).where(eq(schema.users.email, u.email));
+  if (!existing) {
     await db.insert(schema.users).values({
       orgId: org.id,
       email: u.email,
       name: u.name,
       role: u.role,
       locationId: u.locationId,
+      providerSourceId: u.providerSourceId,
       passwordHash: scryptHash("dental-demo")
     });
     console.log(`Created user ${u.email} (password: dental-demo)`);
+  } else if (
+    existing.role !== u.role ||
+    existing.locationId !== u.locationId ||
+    existing.providerSourceId !== u.providerSourceId
+  ) {
+    // Reconcile pre-RBAC seed rows (e.g. Dr. Patel before the provider link).
+    await db.update(schema.users)
+      .set({ role: u.role, locationId: u.locationId, providerSourceId: u.providerSourceId })
+      .where(eq(schema.users.id, existing.id));
+    console.log(`Updated user ${u.email} (role/location/provider link)`);
   }
 }
 
@@ -71,9 +87,9 @@ if (existingTasks.length === 0) {
   const taskDefs = [
     { key: "a", type: "manual", title: "Verify November payer remittance batch", body: "Reconcile the last ERA batch against posted payments before month close.", priority: "normal", assigneeRole: "staff" },
     { key: "a", type: "patient_question", title: "Patient asked about crown warranty", body: "Voicemail from a patient asking whether their 2024 crown is covered for replacement. Draft a reply and call back.", priority: "low", assigneeRole: "staff" },
-    { key: "a", type: "claim_denial", title: "Review denied claim — missing radiograph", body: "Carrier requested a periapical radiograph before reprocessing. Attach and resubmit.", priority: "high", assigneeRole: "staff" },
+    { key: "a", type: "claim_denial", title: "Review denied claim — missing radiograph", body: "Carrier requested a periapical radiograph before reprocessing. Attach and resubmit.", priority: "high", assigneeRole: "billing" },
     { key: "b", type: "manual", title: "Update carrier fee schedule for PPO renewals", body: "New Delta Dental PPO fee schedule effective next month — load it before claims go out.", priority: "normal", assigneeRole: "admin" },
-    { key: "b", type: "eligibility_failure", title: "Eligibility check failed — payer system unavailable", body: "Retry eligibility for tomorrow's 9:00 patient; payer endpoint timed out overnight.", priority: "high", assigneeRole: "staff" }
+    { key: "b", type: "eligibility_failure", title: "Eligibility check failed — payer system unavailable", body: "Retry eligibility for tomorrow's 9:00 patient; payer endpoint timed out overnight.", priority: "high", assigneeRole: "billing" }
   ];
   for (const t of taskDefs) {
     const loc = locs.find((l) => l.key === t.key)!;

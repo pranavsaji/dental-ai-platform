@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { useApp } from "@/components/shell";
 import { Card, Chip, Empty, PageTitle, StatTile, Td, Th, fmtDate, fmtMoney } from "@/components/ui";
+import { RequireRole } from "@/components/require-role";
 
 interface Summary {
   ar: Record<"0-30" | "31-60" | "61-90" | "90+", number>;
@@ -115,7 +116,7 @@ const APPEAL_CHIP: Record<string, string> = {
   lost: "bg-coral-soft text-coral"
 };
 
-export default function BillingPage() {
+function BillingPage() {
   const { location, setLocationId } = useApp();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [claims, setClaims] = useState<ClaimRow[]>([]);
@@ -208,14 +209,14 @@ export default function BillingPage() {
   return (
     <div>
       <PageTitle kicker="Revenue cycle" title="Billing" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         Work the revenue cycle without touching the PMS: AR aging, open claims ranked by a
         transparent priority score, classified denials with drafted appeals, pre-auth status,
         and eligibility exceptions.
       </p>
 
       {notice && (
-        <div className="rise mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-2.5 text-sm text-pine">
+        <div className="mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-2.5 text-sm text-pine">
           {notice}
           <button className="ml-3 text-xs underline" onClick={() => setNotice("")}>dismiss</button>
         </div>
@@ -225,15 +226,15 @@ export default function BillingPage() {
         <>
           <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatTile label="AR 0–30" value={fmtMoney(summary.ar["0-30"])} tone="default" />
-            <StatTile label="AR 31–60" value={fmtMoney(summary.ar["31-60"])} tone="default" delay="rise-1" />
-            <StatTile label="AR 61–90" value={fmtMoney(summary.ar["61-90"])} tone="warn" delay="rise-2" />
-            <StatTile label="AR 90+" value={fmtMoney(summary.ar["90+"])} tone="alert" delay="rise-3" />
+            <StatTile label="AR 31–60" value={fmtMoney(summary.ar["31-60"])} tone="default" />
+            <StatTile label="AR 61–90" value={fmtMoney(summary.ar["61-90"])} tone="warn" />
+            <StatTile label="AR 90+" value={fmtMoney(summary.ar["90+"])} tone="alert" />
           </div>
           <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatTile label="Open claims" value={summary.openClaims} detail={`${fmtMoney(summary.openClaimsValue)} outstanding`} />
-            <StatTile label="Denials" value={summary.denialCount} detail={`${summary.openAppeals} appeal${summary.openAppeals === 1 ? "" : "s"} in flight`} tone={summary.denialCount > 0 ? "warn" : "default"} delay="rise-1" />
-            <StatTile label="Eligibility exceptions" value={summary.eligibilityExceptions} detail="latest check red/amber" tone={summary.eligibilityExceptions > 0 ? "warn" : "good"} delay="rise-2" />
-            <StatTile label="Open pre-auths" value={summary.openPreauths} detail={summary.preauthsNeedingInfo > 0 ? `${summary.preauthsNeedingInfo} need info` : "none blocked"} delay="rise-3" />
+            <StatTile label="Denials" value={summary.denialCount} detail={`${summary.openAppeals} appeal${summary.openAppeals === 1 ? "" : "s"} in flight`} tone={summary.denialCount > 0 ? "warn" : "default"} />
+            <StatTile label="Eligibility exceptions" value={summary.eligibilityExceptions} detail="latest check red/amber" tone={summary.eligibilityExceptions > 0 ? "warn" : "good"} />
+            <StatTile label="Open pre-auths" value={summary.openPreauths} detail={summary.preauthsNeedingInfo > 0 ? `${summary.preauthsNeedingInfo} need info` : "none blocked"} />
           </div>
         </>
       )}
@@ -241,7 +242,7 @@ export default function BillingPage() {
       {/* Eligibility exceptions strip (B2 worklist) */}
       <Card
         title="Eligibility exceptions"
-        className="rise rise-2 mb-6"
+        className="mb-6"
         action={
           <button
             disabled={busy === "sweep"}
@@ -286,7 +287,7 @@ export default function BillingPage() {
       {/* Claims worklist */}
       <Card
         title="Open claims"
-        className="rise rise-2 mb-6"
+        className="mb-6"
         action={
           <div className="flex items-center gap-2 text-xs">
             <select
@@ -360,7 +361,7 @@ export default function BillingPage() {
       {/* Payments ledger (G3) — a ledger, not analytics; trends live on /analytics */}
       <Card
         title="Payments"
-        className="rise rise-3 mb-6"
+        className="mb-6"
         action={
           <div className="flex items-center gap-2 text-xs">
             <select
@@ -431,7 +432,7 @@ export default function BillingPage() {
       </Card>
 
       {/* Denials queue (B4) */}
-      <Card title="Denials" className="rise rise-3 mb-6">
+      <Card title="Denials" className="mb-6">
         {denials.length === 0 ? (
           <Empty text="No classified denials. Denied claims land here with a category and a drafted appeal." />
         ) : (
@@ -478,7 +479,7 @@ export default function BillingPage() {
       {/* Unscheduled treatment (C5) */}
       <Card
         title="Unscheduled treatment"
-        className="rise rise-3 mb-6"
+        className="mb-6"
         action={
           <button
             disabled={busy === "outreach"}
@@ -526,7 +527,7 @@ export default function BillingPage() {
       </Card>
 
       {/* Pre-auth status (B3) */}
-      <Card title="Pre-authorizations" className="rise rise-3">
+      <Card title="Pre-authorizations">
         {preauthRows.length === 0 ? (
           <Empty text="No pre-authorizations yet. Treatment-planning a crown, SRP, or implant starts one automatically." />
         ) : (
@@ -564,5 +565,14 @@ export default function BillingPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+
+export default function BillingPageGuarded() {
+  return (
+    <RequireRole roles={["admin", "billing"]} kicker="Revenue cycle" title="Billing">
+      <BillingPage />
+    </RequireRole>
   );
 }

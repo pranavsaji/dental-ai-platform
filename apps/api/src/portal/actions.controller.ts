@@ -6,7 +6,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { emailMessages, patients, proposedActions, smsMessages } from "@dental/db";
 import { DB, type Db } from "../db";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
-import { ALL_ROLES, assertRole } from "../auth/roles";
+import { assertCan } from "../auth/roles";
 import { PortalService } from "./portal.service";
 import { AuditService } from "../audit.service";
 import { TemporalService } from "../temporal/temporal.service";
@@ -27,6 +27,7 @@ export class ActionsController {
 
   @Get("actions")
   async list(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "approvals.act");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.db.select().from(proposedActions)
       .where(and(eq(proposedActions.orgId, user.orgId), eq(proposedActions.locationId, loc.id)))
@@ -40,9 +41,9 @@ export class ActionsController {
     @Param("id", ParseIntPipe) id: number,
     @Body() body: { decision?: string }
   ) {
-    // G4: approval decisions (the human gate on agent sends/PMS writes) are
-    // front-desk work — all in-location roles, now stated explicitly.
-    assertRole(user, ...ALL_ROLES);
+    // Approval decisions are the human gate on agent sends/PMS writes —
+    // front desk, billing, and the owner; not a clinical surface.
+    assertCan(user, "approvals.act");
     if (body.decision !== "approved" && body.decision !== "rejected") {
       throw new BadRequestException("decision must be 'approved' or 'rejected'");
     }
@@ -74,6 +75,7 @@ export class ActionsController {
 
   @Get("sms")
   async listSms(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "comms.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     const rows = await this.db
       .select({
@@ -104,6 +106,7 @@ export class ActionsController {
   // path exists); console rows are the simulator, smtp rows are real sends.
   @Get("email")
   async listEmail(@CurrentUser() user: SessionUser, @Query("locationId") locationId?: string) {
+    assertCan(user, "comms.read");
     const loc = await this.portal.resolveLocation(user, locationId ? Number(locationId) : undefined);
     return this.db
       .select({
@@ -137,7 +140,7 @@ export class ActionsController {
     @CurrentUser() user: SessionUser,
     @Body() body: { locationId?: number; patientSourceId?: number; body?: string }
   ) {
-    assertRole(user, ...ALL_ROLES); // G4: SMS console simulator — all roles
+    assertCan(user, "comms.simulate"); // inbound SMS simulator — front desk
     if (!body.locationId || !body.patientSourceId || !body.body?.trim()) {
       throw new BadRequestException("locationId, patientSourceId, body required");
     }

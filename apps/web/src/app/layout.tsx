@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Fraunces, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { Shell } from "@/components/shell";
+import { MotionProvider } from "@/components/motion/motion";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -28,7 +29,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${fraunces.variable} ${plexSans.variable} ${plexMono.variable}`}>
       <body>
-        <Shell>{children}</Shell>
+        <MotionProvider>
+          <Shell>{children}</Shell>
+        </MotionProvider>
       </body>
     </html>
   );

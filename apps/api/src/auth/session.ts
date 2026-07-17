@@ -20,8 +20,11 @@ export interface SessionUser {
   orgId: number;
   email: string;
   name: string;
-  role: string; // admin | provider | staff
+  role: string; // admin | provider | billing | staff
   locationId: number | null; // null = all locations in org
+  /** For provider-role users: their PMS provider record (ProvNum) at their
+   *  pinned location. Drives own-schedule / own-patients row scoping. */
+  providerSourceId?: number | null;
   /** CSRF double-submit value bound into the token at issue time. */
   csrf?: string;
 }

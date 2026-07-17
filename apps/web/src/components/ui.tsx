@@ -2,23 +2,27 @@
 
 // Small shared pieces: stat tiles, status chips, section headers, tables.
 
+import { Rise } from "@/components/motion/motion";
+import { AnimatedNumber } from "@/components/motion/animated-number";
+import { TiltCard } from "@/components/motion/tilt-card";
+
 export function PageTitle({ kicker, title }: { kicker: string; title: string }) {
   return (
-    <div className="rise mb-6">
+    <Rise className="mb-6">
       <div className="text-[11px] uppercase tracking-[0.24em] text-teal">{kicker}</div>
       <h1 className="font-display mt-1 text-4xl font-medium tracking-tight">{title}</h1>
-    </div>
+    </Rise>
   );
 }
 
 export function StatTile({
-  label, value, detail, tone = "default", delay = ""
+  label, value, detail, tone = "default", format
 }: {
   label: string;
   value: string | number;
   detail?: string;
   tone?: "default" | "alert" | "warn" | "good";
-  delay?: string;
+  format?: (v: number) => string;
 }) {
   const toneRing = {
     default: "border-line",
@@ -32,10 +36,24 @@ export function StatTile({
     warn: "text-amber",
     good: "text-teal"
   }[tone];
+  const toneBar = {
+    default: "from-pine-2/40 to-sage/30",
+    alert: "from-coral to-coral/30",
+    warn: "from-amber to-amber/30",
+    good: "from-teal to-teal/30"
+  }[tone];
   return (
-    <div className={`rise ${delay} rounded-lg border ${toneRing} bg-surface px-5 py-4 shadow-[0_1px_2px_rgba(29,43,40,0.06)]`}>
+    <div
+      className={`group relative overflow-hidden rounded-lg border ${toneRing} bg-surface px-5 py-4 shadow-[var(--shadow-xs)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]`}
+    >
+      <div
+        aria-hidden
+        className={`absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r ${toneBar} opacity-70 transition-opacity group-hover:opacity-100`}
+      />
       <div className="text-[11px] uppercase tracking-[0.18em] text-ink-faint">{label}</div>
-      <div className={`num mt-2 text-3xl font-medium ${toneText}`}>{value}</div>
+      <div className={`num mt-2 text-3xl font-medium ${toneText}`}>
+        {typeof value === "number" ? <AnimatedNumber value={value} format={format} /> : value}
+      </div>
       {detail && <div className="mt-1 text-xs text-ink-soft">{detail}</div>}
     </div>
   );
@@ -67,14 +85,17 @@ export function Chip({ value }: { value: string }) {
   );
 }
 
-export function Card({ title, action, children, className = "" }: {
+export function Card({ title, action, children, className = "", interactive = false }: {
   title?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  interactive?: boolean;
 }) {
-  return (
-    <section className={`rounded-lg border border-line bg-surface shadow-[0_1px_2px_rgba(29,43,40,0.06)] ${className}`}>
+  const card = (
+    <section
+      className={`rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-sm)] transition-shadow duration-300 hover:shadow-[var(--shadow-md)] ${className}`}
+    >
       {(title || action) && (
         <div className="flex items-center justify-between border-b border-line/70 px-5 py-3">
           {title && <h2 className="text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-soft">{title}</h2>}
@@ -84,6 +105,7 @@ export function Card({ title, action, children, className = "" }: {
       <div>{children}</div>
     </section>
   );
+  return interactive ? <TiltCard className="rounded-[var(--radius-card)]">{card}</TiltCard> : card;
 }
 
 export function Th({ children, className = "" }: { children?: React.ReactNode; className?: string }) {
@@ -98,8 +120,18 @@ export function Td({ children, className = "" }: { children?: React.ReactNode; c
   return <td className={`px-5 py-2.5 text-[13.5px] ${className}`}>{children}</td>;
 }
 
-export function Empty({ text }: { text: string }) {
-  return <div className="px-5 py-10 text-center text-sm text-ink-faint">{text}</div>;
+export function Empty({ text, icon, action }: {
+  text: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="px-5 py-10 text-center text-sm text-ink-faint">
+      {icon && <div className="mb-3 flex justify-center text-2xl text-ink-faint/70">{icon}</div>}
+      {text}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
 }
 
 export function fmtTime(iso: string | Date): string {

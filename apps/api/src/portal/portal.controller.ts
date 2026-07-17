@@ -1,5 +1,6 @@
-import { Controller, ForbiddenException, Get, Param, ParseIntPipe, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, ParseIntPipe, Query, UseGuards } from "@nestjs/common";
 import { JwtGuard, CurrentUser, type SessionUser } from "../auth/auth";
+import { assertCan } from "../auth/roles";
 import { PortalService } from "./portal.service";
 import { AuditService } from "../audit.service";
 
@@ -32,6 +33,7 @@ export class PortalController {
     @Query("locationId") locationId?: string,
     @Query("date") date?: string
   ) {
+    assertCan(user, "schedule.read"); // provider rows are scoped in the service
     const result = await this.portal.schedule(user, locationId ? Number(locationId) : undefined, date);
     await this.audit.log({
       orgId: user.orgId, locationId: result.location.id, actorType: "user", actor: user.email,
@@ -46,6 +48,7 @@ export class PortalController {
     @Query("locationId") locationId?: string,
     @Query("q") q = ""
   ) {
+    assertCan(user, "patients.read"); // provider rows are scoped in the service
     const rows = await this.portal.searchPatients(user, locationId ? Number(locationId) : undefined, q);
     await this.audit.log({
       orgId: user.orgId, actorType: "user", actor: user.email,
@@ -60,6 +63,7 @@ export class PortalController {
     @Param("locationId", ParseIntPipe) locationId: number,
     @Param("sourceId", ParseIntPipe) sourceId: number
   ) {
+    assertCan(user, "patients.read"); // + assertPatientAccess in the service
     const result = await this.portal.patientTimeline(user, locationId, sourceId);
     await this.audit.log({
       orgId: user.orgId, locationId, actorType: "user", actor: user.email,
@@ -78,9 +82,7 @@ export class PortalController {
   // chain records who verified it and what anchor they saw.
   @Get("audit/verify")
   async auditVerify(@CurrentUser() user: SessionUser, @Query("limit") limit?: string) {
-    if (user.role !== "admin" && user.role !== "provider") {
-      throw new ForbiddenException("Audit verification requires admin or provider role");
-    }
+    assertCan(user, "audit.read");
     const result = await this.audit.verifyChain(limit ? Number(limit) : undefined);
     await this.audit.log({
       orgId: user.orgId, actorType: "user", actor: user.email,

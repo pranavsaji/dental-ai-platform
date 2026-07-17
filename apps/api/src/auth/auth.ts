@@ -150,7 +150,8 @@ export class AuthController {
       email: user.email,
       name: user.name,
       role: user.role,
-      locationId: user.locationId
+      locationId: user.locationId,
+      providerSourceId: user.providerSourceId ?? null
     };
     await this.audit.log({
       orgId: user.orgId, actorType: "user", actor: user.email,

@@ -117,12 +117,12 @@ export default function TasksPage() {
   return (
     <div>
       <PageTitle kicker="Work queue" title="Tasks" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         Everything that needs a human: eligibility exceptions, denials, patient questions, and
         workflow escalations land here as durable, assignable work — with the audit trail to match.
       </p>
 
-      <div className="rise rise-1 mb-4 flex items-center gap-3">
+      <div className="mb-4 flex items-center gap-3">
         <select
           className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm shadow-sm outline-none focus:border-teal"
           value={statusFilter}

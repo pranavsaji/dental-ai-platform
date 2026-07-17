@@ -21,10 +21,25 @@
   --color-amber-soft: #f6ead1;
   --color-sage: #7fa593;
   --color-line: #e3ded2;
+  /* Chart series 1. Brand teal nudged above the chroma floor so the
+     (chart-teal, amber) pair passes CVD/contrast validation on white. */
+  --color-chart-teal: #0d8a72;
 
   --font-display: var(--font-fraunces);
   --font-sans: var(--font-plex-sans);
   --font-mono: var(--font-plex-mono);
+
+  /* Layered pine-tinted shadows — warm depth, never gray. */
+  --shadow-xs: 0 1px 2px rgba(14, 59, 52, 0.06);
+  --shadow-sm: 0 1px 2px rgba(14, 59, 52, 0.05), 0 2px 8px -2px rgba(14, 59, 52, 0.07);
+  --shadow-md: 0 1px 2px rgba(14, 59, 52, 0.05), 0 4px 12px -2px rgba(14, 59, 52, 0.08),
+    0 12px 32px -8px rgba(14, 59, 52, 0.1);
+  --shadow-lg: 0 2px 4px rgba(14, 59, 52, 0.05), 0 8px 24px -4px rgba(14, 59, 52, 0.1),
+    0 24px 56px -12px rgba(14, 59, 52, 0.14);
+  --shadow-xl: 0 2px 6px rgba(9, 46, 40, 0.12), 0 16px 40px -8px rgba(9, 46, 40, 0.24),
+    0 40px 96px -16px rgba(9, 46, 40, 0.32);
+
+  --radius-card: 0.75rem;
 }
 
 html {
@@ -47,6 +62,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+}
+
+/* Translucent paper for headers, popovers, tooltips. */
+.glass {
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+}
+
 /* paper grain */
 .grain::before {
   content: "";
@@ -58,12 +85,22 @@ body {
   z-index: 50;
 }
 
-@keyframes rise {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+/* Shimmer loading placeholder (see components/skeleton.tsx). */
+.skeleton {
+  background: color-mix(in srgb, var(--color-line) 55%, var(--color-surface));
+  position: relative;
+  overflow: hidden;
 }
-.rise { animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.rise-1 { animation-delay: 0.05s; }
-.rise-2 { animation-delay: 0.12s; }
-.rise-3 { animation-delay: 0.19s; }
-.rise-4 { animation-delay: 0.26s; }
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
+  }
+}

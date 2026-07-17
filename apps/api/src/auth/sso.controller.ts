@@ -33,7 +33,10 @@ export class SsoController {
   @Get("status")
   status() {
     const c = this.oidc.config();
-    return { enabled: this.oidc.enabled(), providerName: c.providerName };
+    // issuerIsLocal lets the web hide the SSO button on hosted deploys when the
+    // configured IdP is a localhost dev IdP (it would be unreachable for visitors).
+    const issuerIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(c.issuer);
+    return { enabled: this.oidc.enabled(), providerName: c.providerName, issuerIsLocal };
   }
 
   @Get("login")
@@ -107,7 +110,8 @@ export class SsoController {
       email: user.email,
       name: user.name,
       role: user.role,
-      locationId: user.locationId
+      locationId: user.locationId,
+      providerSourceId: user.providerSourceId ?? null
     };
     await this.audit.log({
       orgId: user.orgId, actorType: "user", actor: user.email,

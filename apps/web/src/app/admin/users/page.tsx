@@ -15,6 +15,7 @@ interface AdminUser {
   name: string;
   role: string;
   locationId: number | null;
+  providerSourceId: number | null;
   disabledAt: string | null;
   mfaEnrolled: boolean;
   hasPassword: boolean;
@@ -22,10 +23,21 @@ interface AdminUser {
   identities: Array<{ issuer: string; email: string; lastLoginAt: string | null }>;
 }
 
+interface PmsProvider {
+  locationId: number;
+  sourceId: number;
+  abbr: string;
+  firstName: string;
+  lastName: string;
+}
+
 interface UsersPayload {
   locations: Array<{ id: number; name: string }>;
+  providers: PmsProvider[];
   users: AdminUser[];
 }
+
+const ROLES = ["staff", "provider", "billing", "admin"] as const;
 
 const inputCls =
   "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none focus:border-teal";
@@ -39,8 +51,11 @@ export default function AdminUsersPage() {
   const [data, setData] = useState<UsersPayload | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [invite, setInvite] = useState({ email: "", name: "", role: "staff", locationId: "" });
+  const [invite, setInvite] = useState({ email: "", name: "", role: "staff", locationId: "", providerSourceId: "" });
   const [busy, setBusy] = useState(false);
+  // Role changes to "provider" are staged until a PMS provider is linked —
+  // the API (correctly) rejects an unlinked provider account.
+  const [stagedProviderRole, setStagedProviderRole] = useState<Record<number, boolean>>({});
 
   const load = useCallback(
     () => api<UsersPayload>("/portal/admin/users").then(setData).catch((e) => setError((e as Error).message)),
@@ -97,11 +112,12 @@ export default function AdminUsersPage() {
           email: invite.email,
           name: invite.name,
           role: invite.role,
-          locationId: invite.locationId ? Number(invite.locationId) : null
+          locationId: invite.locationId ? Number(invite.locationId) : null,
+          providerSourceId: invite.providerSourceId ? Number(invite.providerSourceId) : null
         })
       });
       setNotice(`Invited ${res.email}. Temporary password (shown once): ${res.tempPassword}`);
-      setInvite({ email: "", name: "", role: "staff", locationId: "" });
+      setInvite({ email: "", name: "", role: "staff", locationId: "", providerSourceId: "" });
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -115,12 +131,12 @@ export default function AdminUsersPage() {
       <PageTitle kicker="Administration" title="Users" />
 
       {notice && (
-        <div className="rise mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-3 text-sm text-pine">
+        <div className="mb-4 rounded-md border border-teal/40 bg-mint/40 px-4 py-3 text-sm text-pine">
           {notice}
         </div>
       )}
       {error && (
-        <div className="rise mb-4 rounded-md border border-coral/40 bg-coral-soft px-4 py-3 text-sm text-coral">
+        <div className="mb-4 rounded-md border border-coral/40 bg-coral-soft px-4 py-3 text-sm text-coral">
           {error}
         </div>
       )}
@@ -138,22 +154,48 @@ export default function AdminUsersPage() {
             </label>
             <label className="block">
               <span className="text-[11px] uppercase tracking-widest text-ink-faint">Role</span>
-              <select className={inputCls} value={invite.role} onChange={(e) => setInvite({ ...invite, role: e.target.value })}>
-                <option value="staff">staff</option>
-                <option value="provider">provider</option>
-                <option value="admin">admin</option>
+              <select
+                className={inputCls}
+                value={invite.role}
+                onChange={(e) => setInvite({ ...invite, role: e.target.value, providerSourceId: "" })}
+              >
+                {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </label>
             <label className="block">
               <span className="text-[11px] uppercase tracking-widest text-ink-faint">Location</span>
-              <select className={inputCls} value={invite.locationId} onChange={(e) => setInvite({ ...invite, locationId: e.target.value })}>
+              <select
+                className={inputCls}
+                value={invite.locationId}
+                onChange={(e) => setInvite({ ...invite, locationId: e.target.value, providerSourceId: "" })}
+              >
                 <option value="">All (org-wide)</option>
                 {data?.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
             </label>
+            {invite.role === "provider" && (
+              <label className="block">
+                <span className="text-[11px] uppercase tracking-widest text-ink-faint">PMS provider</span>
+                <select
+                  className={inputCls}
+                  value={invite.providerSourceId}
+                  onChange={(e) => setInvite({ ...invite, providerSourceId: e.target.value })}
+                >
+                  <option value="">{invite.locationId ? "choose…" : "pick a location first"}</option>
+                  {data?.providers
+                    .filter((p) => String(p.locationId) === invite.locationId)
+                    .map((p) => (
+                      <option key={p.sourceId} value={p.sourceId}>
+                        {p.abbr} — {p.firstName} {p.lastName}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
             <div className="flex items-end">
               <button
-                disabled={busy || !invite.email.trim() || !invite.name.trim()}
+                disabled={busy || !invite.email.trim() || !invite.name.trim() ||
+                  (invite.role === "provider" && (!invite.locationId || !invite.providerSourceId))}
                 className="w-full rounded-md bg-pine px-4 py-2 text-sm font-semibold text-white transition hover:bg-pine-2 disabled:opacity-60"
               >
                 Invite
@@ -183,14 +225,44 @@ export default function AdminUsersPage() {
                       <Td>
                         <select
                           className={selectCls}
-                          value={u.role}
+                          value={stagedProviderRole[u.id] ? "provider" : u.role}
                           disabled={busy || self}
-                          onChange={(e) => void patch(u.id, { role: e.target.value })}
+                          onChange={(e) => {
+                            if (e.target.value === "provider" && u.role !== "provider") {
+                              // Stage until a PMS provider is linked below.
+                              setStagedProviderRole((s) => ({ ...s, [u.id]: true }));
+                            } else {
+                              setStagedProviderRole((s) => ({ ...s, [u.id]: false }));
+                              void patch(u.id, { role: e.target.value });
+                            }
+                          }}
                         >
-                          <option value="staff">staff</option>
-                          <option value="provider">provider</option>
-                          <option value="admin">admin</option>
+                          {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                         </select>
+                        {(u.role === "provider" || stagedProviderRole[u.id]) && (
+                          <select
+                            className={`${selectCls} mt-1 block`}
+                            value={u.providerSourceId ?? ""}
+                            disabled={busy || u.locationId == null}
+                            title={u.locationId == null ? "Pin the user to a location first" : "Linked PMS provider"}
+                            onChange={(e) => {
+                              setStagedProviderRole((s) => ({ ...s, [u.id]: false }));
+                              void patch(u.id, {
+                                role: "provider",
+                                providerSourceId: e.target.value ? Number(e.target.value) : null
+                              });
+                            }}
+                          >
+                            <option value="">{u.locationId == null ? "needs location" : "link provider…"}</option>
+                            {data.providers
+                              .filter((p) => p.locationId === u.locationId)
+                              .map((p) => (
+                                <option key={p.sourceId} value={p.sourceId}>
+                                  {p.abbr} — {p.firstName} {p.lastName}
+                                </option>
+                              ))}
+                          </select>
+                        )}
                       </Td>
                       <Td>
                         <select

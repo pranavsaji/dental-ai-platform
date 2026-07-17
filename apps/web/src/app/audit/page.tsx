@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Card, Empty, PageTitle, Td, Th } from "@/components/ui";
+import { RequireRole } from "@/components/require-role";
 
 interface AuditRow {
   id: number; actorType: string; actor: string; action: string;
@@ -25,7 +26,7 @@ const ACTOR_TONE: Record<string, string> = {
   system: "bg-line/70 text-ink-soft"
 };
 
-export default function AuditPage() {
+function AuditPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [error, setError] = useState("");
   const [verify, setVerify] = useState<ChainVerification | null>(null);
@@ -57,7 +58,7 @@ export default function AuditPage() {
   return (
     <div>
       <PageTitle kicker="Compliance" title="Audit Trail" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         Append-only record of every PHI access and mutation across users, AI agents, and edge
         synchronizers. Synthetic data only — this demonstrates the HIPAA audit-control pattern.
       </p>
@@ -66,7 +67,7 @@ export default function AuditPage() {
           one, so edits, deletions, or reordering are detectable on demand
           (a nightly cron runs the same walk and raises an urgent task on
           breakage). */}
-      <div className="rise rise-1 mb-4 flex items-center gap-4">
+      <div className="mb-4 flex items-center gap-4">
         <button
           disabled={verifying}
           onClick={() => void runVerify()}
@@ -122,5 +123,14 @@ export default function AuditPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+
+export default function AuditPageGuarded() {
+  return (
+    <RequireRole roles={["admin"]} kicker="Compliance" title="Audit Trail">
+      <AuditPage />
+    </RequireRole>
   );
 }

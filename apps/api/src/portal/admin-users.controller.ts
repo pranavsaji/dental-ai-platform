@@ -10,13 +10,13 @@ import {
 } from "@nestjs/common";
 import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { authIdentities, locations, scryptHash, users } from "@dental/db";
+import { authIdentities, locations, providers, scryptHash, users } from "@dental/db";
 import { DB, type Db } from "../db";
 import { AuditService } from "../audit.service";
 import { CurrentUser, JwtGuard, invalidateDisabledCache, type SessionUser } from "../auth/auth";
-import { assertRole } from "../auth/roles";
+import { ALL_ROLES, assertRole, type Role } from "../auth/roles";
 
-const ROLES = new Set(["admin", "provider", "staff"]);
+const ROLES = new Set<string>(ALL_ROLES as readonly Role[]);
 
 function tempPassword(): string {
   // 16 hex chars — enough entropy for a first login the user must change...
@@ -43,6 +43,25 @@ export class AdminUsersController {
     return row;
   }
 
+  // A doctor account must be pinned to one location and linked to a real PMS
+  // provider record there — that link is what scopes their reads to "my
+  // patients" (portal.service providerScopeOf, which fails closed without it).
+  private async validateProviderLink(
+    role: string, locationId: number | null, providerSourceId: number | null
+  ): Promise<void> {
+    if (role === "provider") {
+      if (locationId == null || providerSourceId == null) {
+        throw new BadRequestException(
+          "provider accounts need a location and a linked PMS provider (providerSourceId)");
+      }
+      const [prov] = await this.db.select({ id: providers.id }).from(providers)
+        .where(and(eq(providers.locationId, locationId), eq(providers.sourceId, providerSourceId)));
+      if (!prov) throw new BadRequestException("No such provider at that location");
+    } else if (providerSourceId != null) {
+      throw new BadRequestException("providerSourceId only applies to provider-role accounts");
+    }
+  }
+
   @Get()
   async list(@CurrentUser() me: SessionUser) {
     this.assertAdmin(me);
@@ -50,14 +69,21 @@ export class AdminUsersController {
     const identities = await this.db.select().from(authIdentities);
     const locs = await this.db.select({ id: locations.id, name: locations.name })
       .from(locations).where(eq(locations.orgId, me.orgId));
+    // PMS provider records per location, for the provider-link dropdown.
+    const provs = await this.db.select({
+      locationId: providers.locationId, sourceId: providers.sourceId,
+      abbr: providers.abbr, firstName: providers.firstName, lastName: providers.lastName
+    }).from(providers).where(and(eq(providers.orgId, me.orgId), eq(providers.isHidden, false)));
     return {
       locations: locs,
+      providers: provs,
       users: rows.map((u) => ({
         id: u.id,
         email: u.email,
         name: u.name,
         role: u.role,
         locationId: u.locationId,
+        providerSourceId: u.providerSourceId,
         disabledAt: u.disabledAt,
         mfaEnrolled: Boolean(u.mfaEnrolledAt),
         hasPassword: Boolean(u.passwordHash),
@@ -73,13 +99,16 @@ export class AdminUsersController {
   @Post()
   async invite(
     @CurrentUser() me: SessionUser,
-    @Body() body: { email?: string; name?: string; role?: string; locationId?: number | null }
+    @Body() body: {
+      email?: string; name?: string; role?: string;
+      locationId?: number | null; providerSourceId?: number | null;
+    }
   ) {
     this.assertAdmin(me);
     const email = (body.email ?? "").toLowerCase().trim();
     const name = (body.name ?? "").trim();
     if (!email.includes("@") || !name) throw new BadRequestException("email and name required");
-    if (!ROLES.has(body.role ?? "")) throw new BadRequestException("role must be admin|provider|staff");
+    if (!ROLES.has(body.role ?? "")) throw new BadRequestException("role must be admin|provider|billing|staff");
     const [existing] = await this.db.select().from(users).where(eq(users.email, email));
     if (existing) throw new BadRequestException("A user with that email already exists");
     if (body.locationId != null) {
@@ -87,6 +116,7 @@ export class AdminUsersController {
         .where(and(eq(locations.id, body.locationId), eq(locations.orgId, me.orgId)));
       if (!loc) throw new BadRequestException("Unknown location");
     }
+    await this.validateProviderLink(body.role!, body.locationId ?? null, body.providerSourceId ?? null);
     const password = tempPassword();
     const [row] = await this.db.insert(users).values({
       orgId: me.orgId,
@@ -94,6 +124,7 @@ export class AdminUsersController {
       name,
       role: body.role!,
       locationId: body.locationId ?? null,
+      providerSourceId: body.providerSourceId ?? null,
       passwordHash: scryptHash(password)
     }).returning();
     await this.audit.log({
@@ -109,7 +140,10 @@ export class AdminUsersController {
   async update(
     @CurrentUser() me: SessionUser,
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { name?: string; role?: string; locationId?: number | null }
+    @Body() body: {
+      name?: string; role?: string;
+      locationId?: number | null; providerSourceId?: number | null;
+    }
   ) {
     this.assertAdmin(me);
     const target = await this.mustGet(me.orgId, id);
@@ -120,7 +154,7 @@ export class AdminUsersController {
       changes.push(`name → ${set.name}`);
     }
     if (body.role && body.role !== target.role) {
-      if (!ROLES.has(body.role)) throw new BadRequestException("role must be admin|provider|staff");
+      if (!ROLES.has(body.role)) throw new BadRequestException("role must be admin|provider|billing|staff");
       if (target.id === me.sub) throw new BadRequestException("You cannot change your own role");
       set.role = body.role;
       changes.push(`role ${target.role} → ${body.role}`);
@@ -134,6 +168,21 @@ export class AdminUsersController {
       set.locationId = body.locationId;
       changes.push(`location ${target.locationId ?? "org-wide"} → ${body.locationId ?? "org-wide"}`);
     }
+    if (body.providerSourceId !== undefined && body.providerSourceId !== target.providerSourceId) {
+      set.providerSourceId = body.providerSourceId;
+      changes.push(`provider link ${target.providerSourceId ?? "none"} → ${body.providerSourceId ?? "none"}`);
+    }
+    // Validate the row as it will be after the change, and drop a stale
+    // provider link automatically when the account stops being a provider.
+    const effRole = set.role ?? target.role;
+    const effLocation = set.locationId !== undefined ? set.locationId : target.locationId;
+    let effProvider = set.providerSourceId !== undefined ? set.providerSourceId : target.providerSourceId;
+    if (effRole !== "provider" && effProvider != null && body.providerSourceId === undefined) {
+      set.providerSourceId = null;
+      effProvider = null;
+      changes.push("provider link cleared");
+    }
+    await this.validateProviderLink(effRole, effLocation ?? null, effProvider ?? null);
     if (changes.length === 0) return { ok: true, changed: [] };
     await this.db.update(users).set(set).where(eq(users.id, target.id));
     await this.audit.log({

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "@/components/shell";
 import { Card, Chip, Empty, PageTitle } from "@/components/ui";
+import { RequireRole } from "@/components/require-role";
 
 interface Action {
   id: number; workflowId: string; agent: string; type: string;
@@ -11,7 +12,7 @@ interface Action {
   decidedBy: string | null;
 }
 
-export default function ApprovalsPage() {
+function ApprovalsPage() {
   const { location } = useApp();
   const [rows, setRows] = useState<Action[]>([]);
   const [busy, setBusy] = useState<number | null>(null);
@@ -43,7 +44,7 @@ export default function ApprovalsPage() {
   return (
     <div>
       <PageTitle kicker="Human in the loop" title="Agent Approvals" />
-      <p className="rise rise-1 -mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
+      <p className="-mt-3 mb-5 max-w-2xl text-sm text-ink-soft">
         AI agents propose; you dispose. Nothing touches a patient or the practice management
         system until a human approves it here (workflows park on a Temporal signal).
       </p>
@@ -54,7 +55,7 @@ export default function ApprovalsPage() {
 
       <div className="grid gap-4">
         {pending.map((a) => (
-          <div key={a.id} className="rise rounded-lg border-l-4 border-amber bg-surface p-5 shadow-[0_1px_3px_rgba(29,43,40,0.08)]">
+          <div key={a.id} className="rounded-lg border-l-4 border-amber bg-surface p-5 shadow-[0_1px_3px_rgba(29,43,40,0.08)]">
             <div className="flex items-start justify-between gap-6">
               <div>
                 <div className="mb-1 flex items-center gap-2 text-xs text-ink-faint">
@@ -130,5 +131,14 @@ export default function ApprovalsPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+
+export default function ApprovalsPageGuarded() {
+  return (
+    <RequireRole roles={["admin", "billing", "staff"]} kicker="Human in the loop" title="Agent Approvals">
+      <ApprovalsPage />
+    </RequireRole>
   );
 }
