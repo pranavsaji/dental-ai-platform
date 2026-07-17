@@ -343,7 +343,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
               Dental Operating System
             </div>
           </div>
-          <nav className="flex-1 space-y-0.5 px-3">
+          {/* min-h-0 + overflow-y-auto: on short viewports the nav scrolls
+              instead of pushing the account/sign-out footer off-screen. */}
+          <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 pb-2">
             {nav.map((n) => {
               const active = n.href === "/" ? pathname === "/" : pathname.startsWith(n.href);
               return (
@@ -380,7 +382,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
-          <div className="border-t border-pine-2 px-6 py-4 text-xs">
+          <div className="shrink-0 border-t border-pine-2 px-6 py-4 text-xs">
             <div className="text-white">{ctx.user.name}</div>
             <div className="mt-0.5 text-mint/60">{ctx.user.role}</div>
             <div className="mt-3 flex items-center gap-3">
