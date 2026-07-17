@@ -14,6 +14,7 @@ COPY tools ./tools
 COPY apps ./apps
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @dental/shared build && pnpm --filter @dental/simulator build
-# Cursor/outbox state lives here — mount a volume to survive restarts.
-VOLUME /repo/edge-sync-state
+# Cursor/outbox state lives in /repo/edge-sync-state — mount a volume there
+# to survive restarts (compose does; on Railway the state is ephemeral, which
+# is safe: capture restarts from epoch and the cloud dedups by event id).
 CMD ["pnpm", "--filter", "@dental/edge-sync", "dev"]

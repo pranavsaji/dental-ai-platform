@@ -134,7 +134,8 @@ services:
   agents:
     profiles: ["apps"]
     build:
-      context: apps/agents
+      context: .
+      dockerfile: apps/agents/Dockerfile
     environment:
       PLATFORM_DATABASE_URL: postgres://dental:dental@postgres:5432/dental
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
