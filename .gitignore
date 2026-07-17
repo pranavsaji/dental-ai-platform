@@ -18,6 +18,8 @@ edge-sync-state/
 *.md
 !README.md
 !feature.md
+!ARCHITECTURE.md
+!RUN_AND_TEST.md
 
 # --- extra secret-material safety nets ---
 .env.*
