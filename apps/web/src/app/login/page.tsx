@@ -149,8 +149,8 @@ export default function LoginPage() {
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
         className="relative z-10 w-[24rem] rounded-xl border border-white/10 bg-paper p-8 shadow-[var(--shadow-xl)]"
       >
-        <div className="font-display text-4xl font-semibold tracking-tight text-pine">Dental AI</div>
-        <div className="mt-1 text-[11px] uppercase tracking-[0.24em] text-teal">
+        <div className="text-center font-display text-4xl font-semibold tracking-tight text-pine">Dental AI</div>
+        <div className="mt-1 text-center text-[11px] uppercase tracking-[0.24em] text-teal">
           The operating system for dentistry
         </div>
 
