@@ -299,41 +299,51 @@ pnpm seed && rm -rf edge-sync-state    # reseed practices + clear edge cursors
 
 ---
 
-## 8. Hosted demo (Vercel + tunnel)
+## 8. Production deployment (Vercel + Railway + Neon)
 
-The dashboard is deployed at **https://dental-ai-platform.vercel.app** (Vercel project
-`dental-ai-platform`, linked in `apps/web/.vercel`). API calls are proxied
-`/backend/:path*` → a Cloudflare quick tunnel → the local API, keeping cookies
-first-party (see ARCHITECTURE.md §12). The local stack (docker + API + agents + edge
-workers) **must be running** and the machine awake for the hosted site to work.
+The platform runs **fully in the cloud** — no local machine required
+(topology in ARCHITECTURE.md §12):
 
-### Bring the hosted demo (back) up
+| Piece | Where | Notes |
+|---|---|---|
+| Web | Vercel — https://dental-ai-platform.vercel.app | proxies `/backend/*` to the API |
+| API + Temporal worker | Railway `api` — https://api-production-f9f2.up.railway.app | Twilio webhooks land here (stable URL) |
+| AI agents | Railway `agents` (private, IPv6 :8100) | embedding model baked into the image |
+| Temporal server | Railway `temporal` (`temporalio/auto-setup`) | persistence on the dedicated Railway `Postgres` — NOT Neon |
+| Edge workers ×2 | Railway `edge-a` / `edge-b`, `PMS_MODE=mock` | the practice simulator is the cloud PMS; generates live activity + applies write-backs |
+| Platform DB | Neon (`neon-yellow-kite`, via Vercel Marketplace) | canonical data, pgvector embeddings, audit chain |
+
+Same demo credentials as §4. All 11 Temporal crons registered; the simulator keeps
+the practices "alive" (bookings, cancellations, claims), so approvals/tasks/SMS
+console keep moving on their own.
+
+### Operating it
 
 ```bash
-# 1. Local stack up (sections 2–3 above), then start a tunnel:
-nohup cloudflared tunnel --url http://localhost:4100 > /tmp/cf-tunnel.log 2>&1 &
-sleep 8 && grep -o "https://[a-z0-9-]*\.trycloudflare\.com" /tmp/cf-tunnel.log | head -1
-
-# 2. Point everything at the new tunnel URL (it rotates on every tunnel restart):
-#    - .env: TWILIO_WEBHOOK_BASE_URL=<tunnel URL>   → restart the API
-#    - Vercel env (from apps/web):
-cd apps/web
-vercel env rm API_PROXY_TARGET production -y
-printf '<tunnel URL>' | vercel env add API_PROXY_TARGET production
-vercel env rm TWILIO_WEBHOOK_BASE_URL production -y
-printf '<tunnel URL>' | vercel env add TWILIO_WEBHOOK_BASE_URL production
-
-# 3. Redeploy + verify:
-vercel deploy --prod --yes
-curl -s -o /dev/null -w "%{http_code}\n" https://dental-ai-platform.vercel.app/backend/portal/locations   # expect 401
+railway status / railway logs --service <api|agents|temporal|edge-a|edge-b>
+railway redeploy --service api -y          # restart a service
+railway up --service api --detach          # deploy current working tree (run from repo root)
+cd apps/web && vercel deploy --prod --yes  # redeploy the frontend
 ```
 
-Log in on the hosted URL with the same demo credentials. Keep the Mac awake during
-demos (`caffeinate -dims`). For a permanent setup, host the API on a real server and
-set `API_PROXY_TARGET` once.
+Gotchas discovered while standing this up (already handled, but relevant when touching it):
+- Railway archives from the **repo root** — all three Dockerfiles use root context.
+- Railway private networking is **IPv6-only** — services bind `::`.
+- Docker `VOLUME` is unsupported — edge state is ephemeral (safe: re-capture + dedup).
+- Edge API keys must match `locations.edge_api_key` **in the DB**, not just env.
+- Temporal persistence needs a real Postgres (Railway `Postgres` service); Neon's
+  serverless compute caused chronic `context deadline exceeded`.
+- After Temporal's store is reset, `railway redeploy --service api` re-registers crons.
 
-### Verified end-to-end on the hosted URL (2026-07-16)
-login + cookie session (201), authenticated portal reads (200), edge heartbeats `live`,
-semantic chart search (pgvector hits), AI pre-visit summary (real LLM with note
-citations), SSE event stream, Temporal workflow execution. Real Twilio delivery pends
-only on `TWILIO_AUTH_TOKEN` + `TWILIO_FROM_NUMBER` being added to `.env` (T14).
+### Twilio (one-time, now that the URL is stable)
+Point the number's **"A message comes in"** webhook (Console → Phone Numbers →
++1 312 483 0370 → Messaging) at:
+`https://api-production-f9f2.up.railway.app/twilio/sms` — status callbacks reconcile
+automatically. Trial-account caveats in T14 still apply.
+
+### Verified end-to-end in production (2026-07-16)
+Hosted login + cookie session (201) and authenticated reads through Railway; both mock
+edges syncing (`pushed 200 events, accepted 200`) with live heartbeats; semantic chart
+search over 1,252 freshly rebuilt embeddings; `morningHuddle` Temporal workflow ran
+end-to-end (LLM narrative persisted and served); `preAuthorization` workflows started
+automatically from simulator activity via ingest hooks.

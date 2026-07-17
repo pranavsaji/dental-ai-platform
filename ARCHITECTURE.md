@@ -393,26 +393,46 @@ grain texture (Tailwind v4 CSS-first `@theme` tokens; fixed light theme).
 
 ## 12. Deployment topology
 
-### Local (primary)
+### Local (development)
 Docker Compose infra (2× MySQL, Postgres+pgvector, Temporal + UI) + five processes:
 API, edge×2, agents, web. See `RUN_AND_TEST.md`.
 
-### Hosted demo (current)
-The Next.js dashboard is deployed to **Vercel** (`https://dental-ai-platform.vercel.app`);
-the rest of the stack runs on the dev machine and is reached through a Cloudflare
-tunnel:
+### Production (current) — Vercel + Railway + Neon
+The platform runs fully in the cloud, no dev machine involved:
 
 ```
-Browser ──HTTPS──▶ Vercel (Next.js)
+Browser ──HTTPS──▶ Vercel (Next.js)  https://dental-ai-platform.vercel.app
                      │  rewrite /backend/:path*  (next.config.ts, API_PROXY_TARGET env)
                      ▼
-             Cloudflare quick tunnel ──▶ localhost:4100 (API) ──▶ local stack
+        Railway project "dental-ai-platform"
+        ├── api      (apps/api Dockerfile)  ── public: api-production-f9f2.up.railway.app
+        │      Temporal worker in-process; Twilio webhooks land here
+        ├── agents   (apps/agents Dockerfile, private :8100, IPv6)
+        ├── temporal (temporalio/auto-setup) ──▶ Postgres (Railway, dedicated —
+        │      Temporal's persistence QPS overwhelms serverless Postgres)
+        ├── edge-a / edge-b  (apps/edge-sync, PMS_MODE=mock — the practice
+        │      simulator IS the PMS in the cloud; write-backs echo through it)
+        └── Postgres (Temporal persistence only)
+                     │
+                     ▼
+        Neon Postgres + pgvector (via Vercel Marketplace) — the platform DB:
+        canonical records, embeddings, audit chain, metrics
 ```
 
-The proxy keeps session cookies **first-party**, so the SameSite=Lax cookie security
-survives unchanged. Vercel env: `NEXT_PUBLIC_API_URL=/backend`,
-`API_PROXY_TARGET=<tunnel URL>`. Quick-tunnel URLs rotate on restart — see
-RUN_AND_TEST.md §8 for the recovery procedure.
+Key wiring decisions:
+- The `/backend` proxy keeps session cookies **first-party**, so the SameSite=Lax
+  cookie security survives unchanged. Vercel env: `NEXT_PUBLIC_API_URL=/backend`,
+  `API_PROXY_TARGET=<Railway api URL>`.
+- Railway's private network is IPv6-only — services bind `::` (uvicorn flag, Temporal
+  `BIND_ON_IP`); inter-service URLs use `<service>.railway.internal`.
+- Cloud edges run `PMS_MODE=mock` (there is no on-prem PMS in the cloud): the embedded
+  practice simulator generates live activity and applies write-back commands, so the
+  flagship loop works end-to-end.
+- Temporal persistence lives on a dedicated Railway Postgres, NOT Neon — serverless
+  Postgres (autosuspend + small compute) caused chronic `context deadline exceeded`.
+  The code also supports Temporal Cloud via `TEMPORAL_API_KEY`/`TEMPORAL_NAMESPACE`.
+- Production secrets (strong `JWT_SECRET`, per-site edge keys) satisfy the API's boot
+  gate; edge keys must match `locations.edge_api_key` in the DB (bootstrap/SQL).
 
 ### AWS path (design artifact)
 `infra/terraform` holds a staged baseline (Aurora, ECS, KMS, Temporal Cloud swap);
