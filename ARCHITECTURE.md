@@ -346,7 +346,7 @@ starter tasks, and 90 days of synthetic metrics history per location.
 | `/audit` | audit trail + chain-verify button | admin |
 | `/account` | profile + voluntary MFA enrollment | all |
 | `/admin/users`, `/admin/locations` | user management (F3), location settings (G1) | admin |
-| `/login`, `/login/sso` | password + MFA challenge/enrollment flows, SSO button, WebGL hero | — |
+| `/login`, `/login/sso` | password (with show/hide toggle) + MFA challenge/enrollment flows, WebGL hero; SSO button auto-hides on hosted deploys when the IdP is a localhost dev IdP (`issuerIsLocal`) | — |
 
 - **Shell** (`components/shell.tsx`): role-filtered nav (mirrors the POLICY matrix),
   location switcher (pinned users locked), integration heartbeat badge, task-count
@@ -456,7 +456,8 @@ stages 3–5 are design notes in `infra/README.md` — deliberately not applied.
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | — | Real SMS (all three required; else console simulator) |
 | `TWILIO_WEBHOOK_BASE_URL` | falls back to `API_URL` | Public HTTPS base for webhook signatures + status callbacks |
 | `SMTP_URL` / `EMAIL_FROM` | — | Real email (else console) |
-| `NEXT_PUBLIC_API_URL` / `API_PROXY_TARGET` | `http://localhost:4100` / — | Web→API wiring (hosted deploys use `/backend` + tunnel) |
+| `NEXT_PUBLIC_API_URL` / `API_PROXY_TARGET` | `http://localhost:4100` / — | Web→API wiring (hosted deploys: `/backend` + the Railway API URL) |
+| `TEMPORAL_NAMESPACE` / `TEMPORAL_API_KEY` / `TEMPORAL_TLS` | `default` / — / off | Temporal Cloud or TLS-fronted server; defaults = local plaintext dev server |
 
 ## 14. Quality gates
 
