@@ -32,13 +32,21 @@ export class TemporalService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const address = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
+    // Cloud-ready connection options: TEMPORAL_TLS=1 enables TLS (implied when an
+    // API key is set), TEMPORAL_API_KEY authenticates against Temporal Cloud, and
+    // TEMPORAL_NAMESPACE selects the namespace (Cloud namespaces look like
+    // "name.acctid"). All default to the local plaintext dev server.
+    const apiKey = process.env.TEMPORAL_API_KEY || undefined;
+    const tls = apiKey || process.env.TEMPORAL_TLS === "1" ? true : undefined;
+    const namespace = process.env.TEMPORAL_NAMESPACE ?? "default";
     try {
-      const connection = await Connection.connect({ address, connectTimeout: "5s" });
-      this.client = new Client({ connection });
+      const connection = await Connection.connect({ address, connectTimeout: "5s", tls, apiKey });
+      this.client = new Client({ connection, namespace });
 
-      const nativeConnection = await NativeConnection.connect({ address });
+      const nativeConnection = await NativeConnection.connect({ address, tls, apiKey });
       this.worker = await Worker.create({
         connection: nativeConnection,
+        namespace,
         taskQueue: TASK_QUEUE,
         workflowsPath: require.resolve("./workflows"),
         activities: {
